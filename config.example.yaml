@@ -1,0 +1,23 @@
+# Copy to config.yaml and edit for your setup:  cp config.example.yaml config.yaml
+# API keys are read from environment variables (see .env.example) and substituted
+# into ${...} placeholders at load time. Never hardcode keys here.
+instances:
+  - id: "1080p"
+    name: "Sonarr 1080p"
+    url: "http://192.168.1.10:8989"
+    api_key: "${SONARR_1080P_API_KEY}"
+  - id: "4k"
+    name: "Sonarr 4K"
+    url: "http://192.168.1.10:8990"
+    api_key: "${SONARR_4K_API_KEY}"
+
+# Ordered fallback chain used by the smart-add flow, keyed by the starting
+# instance. Each step is tried only if the previous tier had no qualifying
+# release. A step is {instance, profile?, rootFolder?}; if profile/rootFolder are
+# omitted the instance's first ones are used. Consecutive steps on the SAME
+# instance swap the quality profile (e.g. 1080p HD -> 1080p SD) instead of moving.
+fallback_chains:
+  "4k":
+    - instance: "1080p"        # try 1080p with its default profile (e.g. HD-1080p)
+    - instance: "1080p"        # then re-search 1080p with a permissive SD profile
+      profile: "SD"

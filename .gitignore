@@ -1,0 +1,21 @@
+# Secrets & local config (never commit — use the .example templates)
+.env
+config.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Frontend / build output
+node_modules/
+frontend/dist/
+backend/app/static/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.log

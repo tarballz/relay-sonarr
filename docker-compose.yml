@@ -1,0 +1,15 @@
+services:
+  sonarr-unified:
+    build: .
+    container_name: sonarr-unified
+    restart: unless-stopped
+    ports:
+      - "8088:8000"
+    environment:
+      - SONARR_1080P_API_KEY=${SONARR_1080P_API_KEY}
+      - SONARR_4K_API_KEY=${SONARR_4K_API_KEY}
+      - CF_ACCESS_ENABLED=${CF_ACCESS_ENABLED:-false}
+      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
