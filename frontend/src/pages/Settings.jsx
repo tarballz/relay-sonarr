@@ -161,7 +161,11 @@ function DefaultsEditor({ onToast, qc }) {
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (data) setForm({ allowSplit: data.allowSplit ?? true, escalateAfterDays: data.escalateAfterDays ?? 0 });
+    if (data) setForm({
+      allowSplit: data.allowSplit ?? true,
+      escalateAfterDays: data.escalateAfterDays ?? 0,
+      stalledDays: data.stalledDays ?? 3,
+    });
   }, [JSON.stringify(data)]);
 
   if (!form) return null;
@@ -199,6 +203,16 @@ function DefaultsEditor({ onToast, qc }) {
             min="0"
             value={form.escalateAfterDays}
             onChange={(e) => setForm((f) => ({ ...f, escalateAfterDays: Number(e.target.value) }))}
+          />
+        </label>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Remove torrents stuck at 0% after (days)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            value={form.stalledDays}
+            onChange={(e) => setForm((f) => ({ ...f, stalledDays: Number(e.target.value) }))}
           />
         </label>
         <div style={{ marginTop: 16 }}>
