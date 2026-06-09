@@ -133,6 +133,37 @@ async def test_smart_add_added_and_triggers_download_when_target_available():
 
 
 @respx.mock
+async def test_smart_add_unmonitors_off_seasons():
+    import json as _json
+
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 75710, "title": "BB"}])
+    )
+    respx.post(f"{B}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 10}))
+    respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 201, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": False},
+        {"id": 202, "seasonNumber": 2, "episodeNumber": 1, "monitored": True, "hasFile": False},
+    ]))
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[{"rejected": False}]))
+    monitor = respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json={}))
+
+    result = await smart_add(
+        reg, tvdb_id=75710, target_id="4k",
+        target_opts={
+            "quality_profile_id": 1, "root_folder_path": "/tv4k", "monitored_seasons": [1],
+        },
+        sleep=_nosleep,
+    )
+
+    assert result["status"] == "added"
+    body = _json.loads(monitor.calls.last.request.content)
+    assert body["episodeIds"] == [202]  # season 2 unmonitored
+    assert body["monitored"] is False
+
+
+@respx.mock
 async def test_smart_add_emits_phase_events():
     events = []
 

@@ -15,11 +15,17 @@ from app.config import load_config
 from app.sonarr.registry import Registry
 
 DEFAULT_CONFIG_PATH = "/config/config.yaml"
+DEFAULT_DATA_PATH = "/data/relay.db"
 
 
 def build_registry(config_path: str | Path | None = None) -> Registry:
     path = config_path or os.environ.get("CONFIG_PATH", DEFAULT_CONFIG_PATH)
     return Registry(load_config(path))
+
+
+def data_path() -> str:
+    """Where the SQLite DB lives — mirrors the CONFIG_PATH env pattern."""
+    return os.environ.get("DATA_PATH", DEFAULT_DATA_PATH)
 
 
 def get_registry(request: Request) -> Registry:
@@ -28,3 +34,11 @@ def get_registry(request: Request) -> Registry:
 
 def get_operations(request: Request):
     return request.app.state.operations
+
+
+def get_db(request: Request):
+    return request.app.state.db
+
+
+def get_reconciler(request: Request):
+    return request.app.state.reconciler

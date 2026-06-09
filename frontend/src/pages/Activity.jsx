@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
-import { TierBadge, Spinner, Empty, bytes } from "../components/Shared.jsx";
+import { TierBadge, Spinner, Empty, ErrorState, bytes } from "../components/Shared.jsx";
 
 export default function Activity() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["queue"],
     queryFn: api.queue,
     refetchInterval: 5000, // live queue
@@ -19,6 +19,7 @@ export default function Activity() {
       </div>
 
       {isLoading && <div style={{ padding: 24 }}><Spinner /></div>}
+      {isError && <ErrorState what="the queue" error={error} onRetry={refetch} />}
 
       {data && data.length === 0 && <Empty big="Queue is empty">Nothing downloading right now.</Empty>}
 
@@ -41,18 +42,18 @@ export default function Activity() {
                 const ep = r.episode;
                 return (
                   <tr key={`${r.instanceId}-${r.id}-${i}`}>
-                    <td><TierBadge instanceId={r.instanceId} name={r.instanceName} /></td>
-                    <td>{r.series?.title || r.title || "—"}</td>
-                    <td className="num">
+                    <td data-label="Tier"><TierBadge instanceId={r.instanceId} name={r.instanceName} /></td>
+                    <td data-label="Title">{r.series?.title || r.title || "—"}</td>
+                    <td className="num" data-label="Episode">
                       {ep ? `S${pad(ep.seasonNumber)}E${pad(ep.episodeNumber)}` : "—"}
                     </td>
-                    <td>
+                    <td data-label="Progress">
                       <div className="progress" title={`${pct}%`}>
                         <span style={{ width: `${pct}%` }} />
                       </div>
                     </td>
-                    <td className="num">{bytes(r.size)}</td>
-                    <td><Status r={r} /></td>
+                    <td className="num" data-label="Size">{bytes(r.size)}</td>
+                    <td data-label="Status"><Status r={r} /></td>
                   </tr>
                 );
               })}

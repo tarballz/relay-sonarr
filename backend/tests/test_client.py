@@ -145,6 +145,47 @@ async def test_delete_series(client):
 
 
 @respx.mock
+async def test_history_filters_event_type(client):
+    route = respx.get(f"{BASE}/api/v3/history").mock(
+        return_value=httpx.Response(200, json={"records": [{"eventType": "grabbed"}]})
+    )
+    await client.history(event_type="grabbed", page_size=50)
+    p = route.calls.last.request.url.params
+    assert p["eventType"] == "grabbed"
+    assert p["pageSize"] == "50"
+    assert p["includeEpisode"] == "true"
+
+
+@respx.mock
+async def test_history_since_passes_date(client):
+    route = respx.get(f"{BASE}/api/v3/history/since").mock(
+        return_value=httpx.Response(200, json=[{"eventType": "downloadFolderImported"}])
+    )
+    await client.history_since("2026-06-04T00:00:00Z")
+    assert route.calls.last.request.url.params["date"] == "2026-06-04T00:00:00Z"
+
+
+@respx.mock
+async def test_set_episode_monitor_puts_body(client):
+    route = respx.put(f"{BASE}/api/v3/episode/monitor").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    await client.set_episode_monitor([3, 4, 5], True)
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"episodeIds": [3, 4, 5], "monitored": True}
+
+
+@respx.mock
+async def test_set_episode_monitor_noop_on_empty(client):
+    route = respx.put(f"{BASE}/api/v3/episode/monitor").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    result = await client.set_episode_monitor([], False)
+    assert result is None
+    assert not route.called
+
+
+@respx.mock
 async def test_command_posts_name(client):
     route = respx.post(f"{BASE}/api/v3/command").mock(
         return_value=httpx.Response(201, json={"id": 99, "name": "RefreshSeries"})

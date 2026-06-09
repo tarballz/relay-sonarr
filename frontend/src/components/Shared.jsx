@@ -20,6 +20,22 @@ export function Empty({ big, children }) {
   );
 }
 
+// Distinct from Empty: a query actually failed (offline Sonarr, backend down).
+// Shows the error and a retry button instead of silently looking "empty".
+export function ErrorState({ error, onRetry, what = "data" }) {
+  return (
+    <div className="empty error-state" role="alert">
+      <div className="big">Couldn’t load {what}</div>
+      <div className="error-detail">{error?.message || "Something went wrong."}</div>
+      {onRetry && (
+        <button className="btn" style={{ marginTop: 14 }} onClick={() => onRetry()}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function bytes(n) {
   if (!n && n !== 0) return "—";
   const u = ["B", "KB", "MB", "GB", "TB"];

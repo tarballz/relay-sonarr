@@ -5,15 +5,16 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
-from app.models import AddRequest, AdvanceFallbackRequest, SmartAddRequest
-from app.operations import OperationLog
+from app.models import AddRequest, AdvanceFallbackRequest, SmartAddRequest, SpillSeasonRequest
 from app.services import add as add_service
+from app.services import orchestrate
 from app.services.availability import check_availability
 from app.sonarr.registry import Registry
 from app.state import get_operations, get_registry
+from app.store.operations import OperationStore
 
 router = APIRouter(prefix="/api", tags=["add"])
 
@@ -22,30 +23,31 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _event_stream(operation: dict, coro_factory):
-    """Run an emit-aware operation, streaming its events as SSE + logging them.
+async def _event_stream(ops: OperationStore, op_id: int, coro_factory):
+    """Run an emit-aware operation, streaming its events as SSE + persisting them.
 
     ``coro_factory(emit)`` returns the awaitable for the operation. Every emitted
-    step is appended to ``operation`` (for the persistent log) and pushed to the
-    client as an ``event: step`` SSE frame; the operation finishes with a
-    ``result`` (or ``error``) frame.
+    step is persisted via the store and pushed to the client as an ``event: step``
+    SSE frame; the operation finishes with a ``result`` (or ``error``) frame and a
+    durable ``finish`` write.
     """
     queue: asyncio.Queue = asyncio.Queue()
 
     async def emit(event: dict):
-        operation["steps"].append(event)
+        await ops.add_step(op_id, event)
         await queue.put(("step", event))
 
     async def runner():
+        result = None
+        error = None
         try:
             result = await coro_factory(emit)
-            operation["result"] = result
             await queue.put(("result", result))
         except Exception as exc:  # noqa: BLE001 - surface to the client as an event
-            operation["error"] = str(exc)
-            await queue.put(("error", {"message": str(exc)}))
+            error = str(exc)
+            await queue.put(("error", {"message": error}))
         finally:
-            operation["finishedAt"] = _now()
+            await ops.finish(op_id, result=result, error=error, finished_at=_now())
             await queue.put(("end", None))
 
     task = asyncio.create_task(runner())
@@ -76,6 +78,7 @@ async def add(req: AddRequest, reg: Registry = Depends(get_registry)):
                 root_folder_path=target.rootFolderPath,
                 monitored=target.monitored,
                 search_now=target.searchNow,
+                monitored_seasons=target.monitoredSeasons,
             )
             results.append({"instanceId": target.instanceId, "ok": True, "series": series})
         except Exception as exc:  # noqa: BLE001 - surface per-target failures to the UI
@@ -95,6 +98,7 @@ async def smart_add(req: SmartAddRequest, reg: Registry = Depends(get_registry))
                 "quality_profile_id": req.targetQualityProfileId,
                 "root_folder_path": req.targetRootFolderPath,
                 "monitored": req.monitored,
+                "monitored_seasons": req.monitoredSeasons,
             },
         )
     except (KeyError, ValueError) as exc:
@@ -117,6 +121,23 @@ async def advance_fallback(req: AdvanceFallbackRequest, reg: Registry = Depends(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/spill-season")
+async def spill_season(req: SpillSeasonRequest, reg: Registry = Depends(get_registry)):
+    """Fetch one whole season from a lower tier (per-season 'lower resolution')."""
+    try:
+        return await orchestrate.spill_season(
+            reg,
+            tvdb_id=req.tvdbId,
+            season=req.season,
+            origin_instance_id=req.originInstanceId,
+            fb_instance_id=req.fallbackInstanceId,
+            profile=req.profile,
+            root=req.root,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/availability")
 async def availability(instanceId: str, seriesId: int, reg: Registry = Depends(get_registry)):
     """Check release availability for an already-added series on an instance."""
@@ -133,12 +154,13 @@ async def smart_add_stream(
     targetQualityProfileId: int,
     targetRootFolderPath: str,
     monitored: bool = True,
+    monitoredSeasons: list[int] | None = Query(default=None),
     title: str = "",
     reg: Registry = Depends(get_registry),
-    ops: OperationLog = Depends(get_operations),
+    ops: OperationStore = Depends(get_operations),
 ):
     """Live (SSE) smart-add: streams each step, ends with the normal result dict."""
-    op = ops.start(kind="smart-add", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+    op_id = await ops.start(kind="smart-add", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
 
     async def factory(emit):
         return await add_service.smart_add(
@@ -149,12 +171,13 @@ async def smart_add_stream(
                 "quality_profile_id": targetQualityProfileId,
                 "root_folder_path": targetRootFolderPath,
                 "monitored": monitored,
+                "monitored_seasons": monitoredSeasons,
             },
             emit=emit,
         )
 
     return StreamingResponse(
-        _event_stream(op, factory), media_type="text/event-stream", headers=_SSE_HEADERS
+        _event_stream(ops, op_id, factory), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
@@ -167,10 +190,10 @@ async def advance_fallback_stream(
     nextIndex: int,
     title: str = "",
     reg: Registry = Depends(get_registry),
-    ops: OperationLog = Depends(get_operations),
+    ops: OperationStore = Depends(get_operations),
 ):
     """Live (SSE) fallback step: streams move/swap/search, ends with the result dict."""
-    op = ops.start(kind="advance", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+    op_id = await ops.start(kind="advance", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
 
     async def factory(emit):
         return await add_service.advance_fallback(
@@ -184,11 +207,104 @@ async def advance_fallback_stream(
         )
 
     return StreamingResponse(
-        _event_stream(op, factory), media_type="text/event-stream", headers=_SSE_HEADERS
+        _event_stream(ops, op_id, factory), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
+
+
+@router.get("/reattempt/stream")
+async def reattempt_stream(
+    tvdbId: int,
+    instanceId: str,
+    seriesId: int,
+    chainKey: str,
+    nextIndex: int,
+    title: str = "",
+    reg: Registry = Depends(get_registry),
+    ops: OperationStore = Depends(get_operations),
+):
+    """Live (SSE) re-attempt: re-search in place; ends placed / fallback_suggested / exhausted."""
+    op_id = await ops.start(kind="reattempt", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+
+    async def factory(emit):
+        return await add_service.reattempt_search(
+            reg,
+            tvdb_id=tvdbId,
+            instance_id=instanceId,
+            series_id=seriesId,
+            chain_key=chainKey,
+            next_index=nextIndex,
+            emit=emit,
+        )
+
+    return StreamingResponse(
+        _event_stream(ops, op_id, factory), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
+
+
+@router.get("/fill-gaps/stream")
+async def fill_gaps_stream(
+    tvdbId: int,
+    fromInstanceId: str,
+    fromSeriesId: int,
+    chainKey: str,
+    nextIndex: int,
+    title: str = "",
+    reg: Registry = Depends(get_registry),
+    ops: OperationStore = Depends(get_operations),
+):
+    """Live (SSE) gap-fill split: streams gaps/add/split, ends with a ``split`` result."""
+    op_id = await ops.start(kind="fill-gaps", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+
+    async def factory(emit):
+        return await add_service.fill_gaps(
+            reg,
+            tvdb_id=tvdbId,
+            from_instance_id=fromInstanceId,
+            from_series_id=fromSeriesId,
+            chain_key=chainKey,
+            next_index=nextIndex,
+            emit=emit,
+        )
+
+    return StreamingResponse(
+        _event_stream(ops, op_id, factory), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
+
+
+@router.get("/spill-season/stream")
+async def spill_season_stream(
+    tvdbId: int,
+    season: int,
+    originInstanceId: str,
+    fallbackInstanceId: str,
+    profile: str = "",
+    root: str = "",
+    title: str = "",
+    reg: Registry = Depends(get_registry),
+    ops: OperationStore = Depends(get_operations),
+):
+    """Live (SSE) season spill: streams gaps/split, ends with a ``spilled`` result."""
+    op_id = await ops.start(kind="spill-season", title=title or f"tvdb:{tvdbId}",
+                            tvdb_id=tvdbId, started_at=_now())
+
+    async def factory(emit):
+        return await orchestrate.spill_season(
+            reg,
+            tvdb_id=tvdbId,
+            season=season,
+            origin_instance_id=originInstanceId,
+            fb_instance_id=fallbackInstanceId,
+            profile=profile or None,
+            root=root or None,
+            emit=emit,
+        )
+
+    return StreamingResponse(
+        _event_stream(ops, op_id, factory), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 
 @router.get("/operations")
-async def operations(ops: OperationLog = Depends(get_operations)):
+async def operations(ops: OperationStore = Depends(get_operations)):
     """Recent smart-add / fallback operations with their step traces, newest first."""
-    return ops.recent()
+    return await ops.recent()

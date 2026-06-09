@@ -23,4 +23,14 @@ COPY --from=frontend /fe/dist ./app/static
 
 EXPOSE 8000
 ENV CONFIG_PATH=/config/config.yaml
+# Durable state (operations log, placements, availability cache) lives here.
+# Mount a writable volume at /data (see docker-compose.yml).
+ENV DATA_PATH=/data/relay.db
+
+# Liveness: /healthz returns 503 when the reconciler is enabled but has gone
+# stale, so a wedged loop (not just a dead port) is detectable. Uses stdlib so
+# we don't need curl in the slim image. start-period covers first-tick warmup.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=4).status==200 else 1)"
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

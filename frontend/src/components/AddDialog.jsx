@@ -1,9 +1,19 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, streamSmartAdd, streamAdvance, tierClass } from "../api.js";
+import {
+  api,
+  streamSmartAdd,
+  streamAdvance,
+  streamReattempt,
+  streamFillGaps,
+  tierClass,
+} from "../api.js";
 import { TierBadge, Spinner } from "./Shared.jsx";
+import { useDialog } from "./useDialog.js";
 import ProgressStream from "./ProgressStream.jsx";
+import ResolutionOptions from "./ResolutionOptions.jsx";
+import ConfirmDialog from "./ConfirmDialog.jsx";
 
 // Pull a show's fanart (backdrop) URL from its images, if present.
 function fanartUrl(series) {
@@ -11,28 +21,40 @@ function fanartUrl(series) {
   return img?.remoteUrl || img?.url || null;
 }
 
-// Turn an availability result into a one-line "why nothing qualified" summary.
-function reasonText(av) {
-  if (!av) return "";
-  const total = av.totalReleases || 0;
-  if (total === 0) return "No releases found at all.";
-  const parts = (av.rejectionSummary || []).map((r) => `${r.count} ${r.reason}`);
-  return `${total} found, none qualified${parts.length ? " — " + parts.join(", ") : ""}.`;
-}
-
 // Per-instance add dialog. One toggle per configured tier; each carries its own
 // quality-profile + root-folder pickers. Adding a single tier that has a
-// configured fallback routes through /smart-add so we can surface the
-// "no release found — try the other tier?" banner.
+// configured fallback routes through /smart-add so we can surface the roadblock
+// resolution menu ("no release found — here's how to resolve it").
 export default function AddDialog({ series, instances, fallbackChains, onClose, onToast }) {
   const [opts, setOpts] = useState({}); // id -> {profiles, rootFolders, profileId, rootFolderPath}
   const [sel, setSel] = useState({}); // id -> bool
   const [busy, setBusy] = useState(false);
-  const [step, setStep] = useState(null); // current fallback_suggested response
+  const [roadblock, setRoadblock] = useState(null); // fallback_suggested | exhausted result
   const [streaming, setStreaming] = useState(false);
   const [steps, setSteps] = useState([]); // live progress events for the current op
-  const [terminal, setTerminal] = useState(null); // 'exhausted' result awaiting keep/remove
+  const [confirmRemove, setConfirmRemove] = useState(null); // {instanceId, seriesId} awaiting confirm
+  const [monitorAll, setMonitorAll] = useState(true); // monitor every season vs a chosen subset
+  const [seasonSel, setSeasonSel] = useState({}); // seasonNumber -> bool (only used when !monitorAll)
   const queryClient = useQueryClient();
+  const dialogRef = useDialog(onClose);
+
+  // The show's seasons from the lookup, sorted; specials (0) last and off by default.
+  const seasonList = (series.seasons || [])
+    .map((s) => s.seasonNumber)
+    .filter((n) => n !== undefined && n !== null)
+    .sort((a, b) => a - b);
+
+  // Default the per-season selection: all numbered seasons on, specials off.
+  useEffect(() => {
+    setSeasonSel(Object.fromEntries(seasonList.map((n) => [n, n !== 0])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series.tvdbId]);
+
+  const toggleSeason = (n) => setSeasonSel((s) => ({ ...s, [n]: !s[n] }));
+  const selectedSeasons = seasonList.filter((n) => seasonSel[n]);
+  // null ⇒ monitor all (backend default); an array ⇒ monitor only those seasons.
+  const monitoredSeasons = monitorAll ? null : selectedSeasons;
+  const seasonChoiceInvalid = !monitorAll && selectedSeasons.length === 0;
 
   useEffect(() => {
     let alive = true;
@@ -70,15 +92,20 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     return instances.find((i) => i.id === id)?.name || id;
   }
 
-  // Terminal handler shared by smart-add and advance streams.
+  // Terminal handler shared by every stream (smart-add / advance / reattempt / fill-gaps).
   function handleTerminal(res, fallbackToastName) {
-    if (res.status === "fallback_suggested") {
-      setStep(res); // show the next-step banner beneath the completed step list
+    if (res.status === "fallback_suggested" || res.status === "exhausted") {
+      setRoadblock(res); // show the resolution menu beneath the completed step list
       return;
     }
-    if (res.status === "exhausted") {
-      // Keep the dialog open so the user can remove the empty series or keep it.
-      setTerminal(res);
+    if (res.status === "split") {
+      const to = whereName(res.to?.instanceId);
+      onToast(
+        `Split “${series.title}” — ${res.gapCount} missing episode${res.gapCount === 1 ? "" : "s"} ` +
+          `now downloading on ${to}; existing episodes kept.`
+      );
+      queryClient.invalidateQueries({ queryKey: ["series"] });
+      onClose();
       return;
     }
     if (res.status === "added" || res.status === "placed") {
@@ -91,23 +118,65 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     onClose();
   }
 
-  async function removeExhausted() {
+  // Common handlers for any roadblock stream.
+  function streamHandlers(fallbackToastName) {
+    return {
+      onStep: (e) => setSteps((s) => [...s, e]),
+      onResult: (res) => {
+        setStreaming(false);
+        handleTerminal(res, fallbackToastName);
+      },
+      onError: (msg) => {
+        setStreaming(false);
+        onToast(msg, true);
+      },
+    };
+  }
+
+  // Start one of the resolution streams, switching the dialog to the live view.
+  function runStream(streamFn, params) {
+    setRoadblock(null);
+    setSteps([]);
+    setStreaming(true);
+    streamFn({ ...params, title: series.title }, streamHandlers());
+  }
+
+  // Route a chosen resolution option to the right endpoint.
+  function dispatchOption(o) {
+    switch (o.action) {
+      case "reattempt":
+        runStream(streamReattempt, o.payload);
+        break;
+      case "walk_chain":
+        runStream(streamAdvance, o.payload);
+        break;
+      case "fill_gaps":
+        runStream(streamFillGaps, o.payload);
+        break;
+      case "leave":
+        onToast(`Kept “${series.title}” monitored — it'll grab when a release appears.`);
+        onClose();
+        break;
+      case "remove":
+        setConfirmRemove(o.payload);
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function confirmRemoveSeries() {
     setBusy(true);
     try {
-      await api.removeSeries(terminal.instanceId, terminal.seriesId);
+      await api.removeSeries(confirmRemove.instanceId, confirmRemove.seriesId);
       await queryClient.invalidateQueries({ queryKey: ["series"] });
-      onToast(`Removed “${series.title}” — no release was available on any tier.`);
+      onToast(`Removed “${series.title}” — no release was available.`);
       onClose();
     } catch (e) {
       onToast(e.message, true);
       setBusy(false);
+      setConfirmRemove(null);
     }
-  }
-
-  function keepExhausted() {
-    const where = whereName(terminal.instanceId);
-    onToast(`Kept “${series.title}” monitored on ${where} — it'll grab when a release appears.`);
-    onClose();
   }
 
   async function handleAdd() {
@@ -123,19 +192,10 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
           targetInstanceId: t.id,
           targetQualityProfileId: o.profileId,
           targetRootFolderPath: o.rootFolderPath,
+          monitoredSeasons,
           title: series.title,
         },
-        {
-          onStep: (e) => setSteps((s) => [...s, e]),
-          onResult: (res) => {
-            setStreaming(false);
-            handleTerminal(res, t.name);
-          },
-          onError: (msg) => {
-            setStreaming(false);
-            onToast(msg, true);
-          },
-        }
+        streamHandlers(t.name)
       );
       return;
     }
@@ -147,6 +207,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
         instanceId: i.id,
         qualityProfileId: opts[i.id].profileId,
         rootFolderPath: opts[i.id].rootFolderPath,
+        monitoredSeasons,
       }));
       const res = await api.add({ tvdbId: series.tvdbId, targets });
       const ok = res.results.filter((r) => r.ok).map((r) => r.instanceId);
@@ -161,178 +222,144 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     }
   }
 
-  // Walk one chain step live. Result is terminal (placed/exhausted) or another
-  // suggestion, which re-renders the banner beneath the fresh step list.
-  function advance() {
-    const adv = step.advance;
-    setStep(null);
-    setSteps([]);
-    setStreaming(true);
-    streamAdvance(
-      { ...adv, title: series.title },
-      {
-        onStep: (e) => setSteps((s) => [...s, e]),
-        onResult: (res) => {
-          setStreaming(false);
-          handleTerminal(res);
-        },
-        onError: (msg) => {
-          setStreaming(false);
-          onToast(msg, true);
-        },
-      }
-    );
-  }
-
   const loading = Object.keys(opts).length === 0;
   const inFlight = streaming || steps.length > 0; // showing the live play-by-play
   const backdrop = fanartUrl(series);
 
   return (
-    <div className="scrim" onClick={onClose}>
-      <motion.div
-        className="dialog"
-        onClick={(e) => e.stopPropagation()}
-        initial={{ opacity: 0, y: 16, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.22, ease: [0.2, 0.7, 0.2, 1] }}
-      >
-        <div className="dialog-head">
-          {backdrop && (
-            <div className="dialog-backdrop" style={{ backgroundImage: `url(${backdrop})` }} />
-          )}
-          <h2>{series.title}</h2>
-          <div className="meta" style={{ marginTop: 6 }}>
-            {series.year ? <span>{series.year}</span> : null}
-            {series.network ? <span>· {series.network}</span> : null}
-            <span className="mono">tvdb {series.tvdbId}</span>
-          </div>
-        </div>
-
-        <div className="dialog-body">
-          {inFlight ? (
-            <>
-              <ProgressStream steps={steps} />
-              {step && (
-                <FallbackBanner data={step} series={series} onAccept={advance} onKeep={onClose} busy={false} />
-              )}
-              {terminal && (
-                <ExhaustedPanel
-                  data={terminal}
-                  series={series}
-                  where={whereName(terminal.instanceId)}
-                  onRemove={removeExhausted}
-                  onKeep={keepExhausted}
-                  busy={busy}
-                />
-              )}
-            </>
-          ) : loading ? (
-            <div style={{ padding: "8px 0" }}>
-              <Spinner /> <span style={{ color: "var(--ink-dim)", marginLeft: 8 }}>Loading profiles…</span>
+    <>
+      <div className="scrim" onClick={onClose}>
+        <motion.div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Add ${series.title}`}
+          tabIndex={-1}
+          className="dialog"
+          onClick={(e) => e.stopPropagation()}
+          initial={{ opacity: 0, y: 16, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.22, ease: [0.2, 0.7, 0.2, 1] }}
+        >
+          <div className="dialog-head">
+            {backdrop && (
+              <div className="dialog-backdrop" style={{ backgroundImage: `url(${backdrop})` }} />
+            )}
+            <h2>{series.title}</h2>
+            <div className="meta" style={{ marginTop: 6 }}>
+              {series.year ? <span>{series.year}</span> : null}
+              {series.network ? <span>· {series.network}</span> : null}
+              <span className="mono">tvdb {series.tvdbId}</span>
             </div>
-          ) : (
-            <>
-              <div className="section-label">Send to</div>
-              {instances.map((i) => {
-                const o = opts[i.id] || {};
-                const on = !!sel[i.id];
-                return (
-                  <div key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`} onClick={() => toggle(i.id)}>
-                    <span className="check">{on ? "✓" : ""}</span>
-                    <TierBadge instanceId={i.id} name={i.name} />
-                    {on && !o.error && (
-                      <div className="opts" onClick={(e) => e.stopPropagation()}>
-                        <select className="input" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
-                          {o.profiles.map((p) => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                          ))}
-                        </select>
-                        <select className="input" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
-                          {o.rootFolders.map((r) => (
-                            <option key={r.path} value={r.path}>{r.path}</option>
-                          ))}
-                        </select>
+          </div>
+
+          <div className="dialog-body">
+            {inFlight ? (
+              <>
+                <ProgressStream steps={steps} />
+                {roadblock && (
+                  <ResolutionOptions
+                    data={roadblock}
+                    series={series}
+                    onDispatch={dispatchOption}
+                  />
+                )}
+              </>
+            ) : loading ? (
+              <div style={{ padding: "8px 0" }}>
+                <Spinner /> <span style={{ color: "var(--ink-dim)", marginLeft: 8 }}>Loading profiles…</span>
+              </div>
+            ) : (
+              <>
+                {seasonList.length > 0 && (
+                  <>
+                    <div className="section-label">Monitor</div>
+                    <div className="monitor-choice">
+                      <button
+                        className={`seg ${monitorAll ? "on" : ""}`}
+                        onClick={() => setMonitorAll(true)}
+                      >
+                        All episodes
+                      </button>
+                      <button
+                        className={`seg ${!monitorAll ? "on" : ""}`}
+                        onClick={() => setMonitorAll(false)}
+                      >
+                        Choose seasons
+                      </button>
+                    </div>
+                    {!monitorAll && (
+                      <div className="season-picker">
+                        {seasonList.map((n) => (
+                          <label key={n} className={`season-chip ${seasonSel[n] ? "on" : ""}`}>
+                            <input
+                              type="checkbox"
+                              checked={!!seasonSel[n]}
+                              onChange={() => toggleSeason(n)}
+                            />
+                            {n === 0 ? "Specials" : `S${n}`}
+                          </label>
+                        ))}
                       </div>
                     )}
-                    {on && o.error && <span style={{ marginLeft: "auto", color: "var(--danger)", fontSize: 12 }}>unreachable</span>}
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </div>
-
-        {!inFlight && !loading && (
-          <div className="dialog-foot">
-            <button className="btn ghost" onClick={onClose}>Cancel</button>
-            <button className="btn primary" disabled={busy || chosen.length === 0} onClick={handleAdd}>
-              {busy ? <Spinner /> : `Add${chosen.length ? ` to ${chosen.length} tier${chosen.length > 1 ? "s" : ""}` : ""}`}
-            </button>
+                  </>
+                )}
+                <div className="section-label">Send to</div>
+                {instances.map((i) => {
+                  const o = opts[i.id] || {};
+                  const on = !!sel[i.id];
+                  return (
+                    <div key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`} onClick={() => toggle(i.id)}>
+                      <span className="check">{on ? "✓" : ""}</span>
+                      <TierBadge instanceId={i.id} name={i.name} />
+                      {on && !o.error && (
+                        <div className="opts" onClick={(e) => e.stopPropagation()}>
+                          <select className="input" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
+                            {o.profiles.map((p) => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                          <select className="input" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
+                            {o.rootFolders.map((r) => (
+                              <option key={r.path} value={r.path}>{r.path}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {on && o.error && <span style={{ marginLeft: "auto", color: "var(--danger)", fontSize: 12 }}>unreachable</span>}
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
-        )}
-      </motion.div>
-    </div>
-  );
-}
 
-function ExhaustedPanel({ data, series, where, onRemove, onKeep, busy }) {
-  return (
-    <motion.div
-      className="fallback exhausted-panel"
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-    >
-      <div className="glyph">∅</div>
-      <div className="copy">
-        <strong>No release found on any tier for “{series.title}.”</strong>
-        <p>
-          It's sitting empty on {where}. Remove it, or keep it monitored so Sonarr grabs it
-          automatically if a release shows up later.
-        </p>
+          {!inFlight && !loading && (
+            <div className="dialog-foot">
+              <button className="btn ghost" onClick={onClose}>Cancel</button>
+              <button
+                className="btn primary"
+                disabled={busy || chosen.length === 0 || seasonChoiceInvalid}
+                onClick={handleAdd}
+              >
+                {busy ? <Spinner /> : `Add${chosen.length ? ` to ${chosen.length} tier${chosen.length > 1 ? "s" : ""}` : ""}`}
+              </button>
+            </div>
+          )}
+        </motion.div>
       </div>
-      <div className="actions">
-        <button className="btn ghost" onClick={onKeep} disabled={busy}>Keep monitored</button>
-        <button className="btn danger" onClick={onRemove} disabled={busy}>
-          {busy ? <Spinner /> : `Remove from ${where}`}
-        </button>
-      </div>
-    </motion.div>
-  );
-}
 
-function FallbackBanner({ data, series, onAccept, onKeep, busy }) {
-  const next = data.next;
-  // Same instance → it's a quality-profile retry; different instance → a move.
-  const action = next.sameInstance
-    ? `Try ${next.qualityProfileName}`
-    : `Move to ${next.instanceName}`;
-  const target = next.sameInstance
-    ? `${next.instanceName} with the ${next.qualityProfileName} profile`
-    : `${next.instanceName} (${next.qualityProfileName})`;
-  return (
-    <motion.div className="fallback" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <div className="glyph">⚠</div>
-      <div className="copy">
-        <strong>No qualifying release for “{series.title}” yet.</strong>
-        {data.availability && (
-          <p style={{ color: "var(--ink-faint)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-            {reasonText(data.availability)}
-          </p>
-        )}
-        <p>
-          Next: search <strong>{target}</strong>.{" "}
-          {next.sameInstance
-            ? "The series stays put; only its quality profile changes."
-            : "If found there, the empty entry on the current tier is removed."}
-        </p>
-      </div>
-      <div className="actions">
-        <button className="btn ghost" onClick={onKeep} disabled={busy}>Stop here</button>
-        <button className="btn t1080p" onClick={onAccept} disabled={busy}>
-          {busy ? <Spinner /> : action}
-        </button>
-      </div>
-    </motion.div>
+      {confirmRemove && (
+        <ConfirmDialog
+          title={`Remove “${series.title}”?`}
+          message={`This removes the empty series from ${whereName(confirmRemove.instanceId)}. Files already on disk are kept.`}
+          confirmLabel="Remove"
+          danger
+          busy={busy}
+          onConfirm={confirmRemoveSeries}
+          onCancel={() => setConfirmRemove(null)}
+        />
+      )}
+    </>
   );
 }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
-import { TierBadge, Spinner, Empty } from "../components/Shared.jsx";
+import { TierBadge, Spinner, Empty, ErrorState } from "../components/Shared.jsx";
 import AddDialog from "../components/AddDialog.jsx";
 
 function HealthPills() {
@@ -67,6 +67,7 @@ export default function SearchAdd() {
       </form>
 
       {results.isFetching && <div style={{ padding: 24 }}><Spinner /></div>}
+      {results.isError && <ErrorState what="search results" error={results.error} onRetry={results.refetch} />}
 
       {results.data && results.data.length > 0 && (
         <div className="result-grid">
@@ -129,6 +130,6 @@ function nameOf(instances, id) {
 function Poster({ series }) {
   const img = (series.images || []).find((i) => i.coverType === "poster");
   const url = img?.remoteUrl || img?.url;
-  if (url) return <img className="poster" src={url} alt="" loading="lazy" />;
+  if (url) return <img className="poster" src={url} alt={`Poster for ${series.title}`} loading="lazy" />;
   return <div className="poster ph">{(series.title || "?")[0]}</div>;
 }

@@ -10,6 +10,8 @@ class AddTarget(BaseModel):
     rootFolderPath: str
     monitored: bool = True
     searchNow: bool = True
+    # None ⇒ monitor all seasons; a list ⇒ monitor only those season numbers.
+    monitoredSeasons: list[int] | None = None
 
 
 class AddRequest(BaseModel):
@@ -23,6 +25,8 @@ class SmartAddRequest(BaseModel):
     targetQualityProfileId: int
     targetRootFolderPath: str
     monitored: bool = True
+    # None ⇒ monitor all seasons; a list ⇒ monitor only those season numbers.
+    monitoredSeasons: list[int] | None = None
 
 
 class AdvanceFallbackRequest(BaseModel):
@@ -33,3 +37,14 @@ class AdvanceFallbackRequest(BaseModel):
     fromSeriesId: int
     chainKey: str
     nextIndex: int
+
+
+class SpillSeasonRequest(BaseModel):
+    """Fetch one whole season from a lower tier (the per-season 'lower res' action)."""
+
+    tvdbId: int
+    season: int
+    originInstanceId: str
+    fallbackInstanceId: str
+    profile: str | None = None
+    root: str | None = None

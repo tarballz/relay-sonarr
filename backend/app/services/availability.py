@@ -48,9 +48,21 @@ def summarize_rejections(releases: list[dict]) -> list[dict]:
 
 
 def _pick_sample_episode(episodes: list[dict]) -> dict | None:
-    """Prefer a monitored episode; fall back to the first episode of any kind."""
+    """Pick the episode whose availability actually matters.
+
+    Prefer one we still *need* — monitored but with no file — since that's the
+    real question ("can a release be had for something missing?"). For a freshly
+    added series nothing has a file yet, so this is simply the first monitored
+    episode. For an already-populated series (e.g. 4K with only part of S1 on
+    disk) it skips the episodes already grabbed and samples a genuine gap, so a
+    partially-available series isn't reported "available" off an episode you
+    already have. Falls back to any monitored episode, then to anything.
+    """
     if not episodes:
         return None
+    for ep in episodes:
+        if ep.get("monitored") and not ep.get("hasFile"):
+            return ep
     for ep in episodes:
         if ep.get("monitored"):
             return ep

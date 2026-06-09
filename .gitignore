@@ -14,6 +14,13 @@ node_modules/
 frontend/dist/
 backend/app/static/
 
+# Durable state (SQLite) — runtime data, never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+backend/relay.db*
+
 # Editor / OS
 .vscode/
 .idea/

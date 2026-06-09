@@ -429,6 +429,13 @@ select.input {
 }
 
 /* ---- Dialog -------------------------------------------------------------- */
+/* Lock background scroll whenever any dialog's scrim is mounted. Every dialog
+   shares .scrim, so this one rule covers them all (PolicyEditor, ResolveDialog,
+   SeasonDialog, AddDialog, ConfirmDialog). Keyed on .scrim, not .drawer-scrim,
+   so it composes with the nav drawer's own scroll lock. */
+body:has(.scrim) {
+  overflow: hidden;
+}
 .scrim {
   position: fixed;
   inset: 0;
@@ -559,6 +566,92 @@ label.field {
   gap: 8px;
 }
 
+/* ---- Resolution options menu (roadblock chooser) ------------------------- */
+.resolution {
+  border: 1px solid var(--t-4k-dim);
+  border-left: 3px solid var(--t-4k);
+  background: linear-gradient(90deg, rgba(245, 166, 35, 0.1), rgba(245, 166, 35, 0.02));
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.resolution-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.resolution-head .glyph {
+  font-size: 22px;
+  filter: saturate(1.2);
+}
+.resolution-head strong {
+  font-weight: 600;
+}
+.resolution-reason {
+  margin: 3px 0 0;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.resolution-prompt {
+  margin: 8px 0 0;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.resolution-opts {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.resolution-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 11px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: transform 0.12s, background 0.16s, border-color 0.16s, opacity 0.16s;
+}
+.resolution-opt:hover {
+  background: #232834;
+}
+.resolution-opt:active {
+  transform: translateY(1px);
+}
+.resolution-opt:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.resolution-opt.t1080p {
+  border-color: var(--t-1080-dim);
+}
+.resolution-opt.t4k {
+  border-color: var(--t-4k-dim);
+}
+.resolution-opt.danger {
+  border-color: rgba(239, 68, 68, 0.4);
+}
+.resolution-opt-label {
+  font-weight: 600;
+  font-size: 14px;
+}
+.resolution-opt.t1080p .resolution-opt-label {
+  color: var(--t-1080);
+}
+.resolution-opt.t4k .resolution-opt-label {
+  color: var(--t-4k);
+}
+.resolution-opt.danger .resolution-opt-label {
+  color: var(--danger);
+}
+.resolution-opt-desc {
+  color: var(--ink-dim);
+  font-size: 12px;
+}
+
 /* ---- States -------------------------------------------------------------- */
 .empty {
   text-align: center;
@@ -570,6 +663,14 @@ label.field {
   font-size: 22px;
   color: var(--ink-dim);
   margin-bottom: 6px;
+}
+.error-state .big {
+  color: var(--danger);
+}
+.error-state .error-detail {
+  color: var(--ink-dim);
+  font-size: 13px;
+  font-family: var(--font-mono);
 }
 .spinner {
   width: 20px;
@@ -664,6 +765,19 @@ label.field {
 .view-toggle button.on {
   background: var(--panel-2);
   color: var(--t-1080);
+}
+
+/* ---- Library search + sort (in the page-head row) ----------------------- */
+.lib-search {
+  flex: 0 1 200px;
+  padding: 9px 13px;
+  font-size: 14px;
+}
+.lib-sort {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 9px 32px 9px 12px;
+  font-size: 14px;
 }
 
 /* ---- Poster grid (Library) ---------------------------------------------- */
@@ -896,8 +1010,12 @@ label.field {
   border-radius: var(--radius);
   overflow: hidden;
 }
+.op-row {
+  display: flex;
+  align-items: center;
+}
 .op-summary {
-  width: 100%;
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -908,6 +1026,11 @@ label.field {
   cursor: pointer;
   text-align: left;
   font-family: var(--font-sans);
+}
+.op-resolve {
+  margin: 0 14px 0 4px;
+  padding: 8px 14px;
+  white-space: nowrap;
 }
 .op-badge {
   font-family: var(--font-mono);
@@ -1010,6 +1133,120 @@ label.field {
   transform: scale(0.92);
 }
 
+.poster-policy {
+  position: absolute;
+  top: 8px;
+  left: 40px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 9, 12, 0.88);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s, transform 0.12s;
+  backdrop-filter: blur(6px);
+}
+.poster-card:hover .poster-policy {
+  opacity: 1;
+}
+.poster-policy:hover {
+  background: rgba(45, 212, 191, 0.2);
+  color: var(--t-1080);
+  border-color: var(--t-1080-dim);
+}
+.poster-policy:active {
+  transform: scale(0.92);
+}
+
+/* Per-series resolution status badge */
+.poster-status {
+  margin-top: 6px;
+}
+.status-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+}
+.status-badge.st-on-target { color: var(--ok); border-color: rgba(74, 222, 128, 0.35); background: rgba(74, 222, 128, 0.1); }
+.status-badge.st-split,
+.status-badge.st-reconciling { color: var(--t-1080); border-color: var(--t-1080-dim); background: rgba(45, 212, 191, 0.1); }
+.status-badge.st-waiting,
+.status-badge.st-retrying { color: var(--t-4k); border-color: var(--t-4k-dim); background: rgba(245, 166, 35, 0.1); }
+.status-badge.st-stuck { color: var(--danger); border-color: #6e2230; background: rgba(239, 91, 110, 0.1); }
+.status-badge.paused { color: var(--ink-faint); }
+
+/* Policy editor fallback-step row */
+.policy-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.policy-step .input {
+  flex: 1;
+}
+.policy-step .policy-days {
+  flex: 0 0 64px;
+}
+
+.poster-resolve {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 9, 12, 0.88);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s, transform 0.12s;
+  backdrop-filter: blur(6px);
+}
+.poster-card:hover .poster-resolve {
+  opacity: 1;
+}
+.poster-resolve:hover {
+  background: rgba(245, 166, 35, 0.2);
+  color: var(--t-4k);
+  border-color: var(--t-4k-dim);
+}
+.poster-resolve:active {
+  transform: scale(0.92);
+}
+
+/* table row resolve */
+.row-resolve {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--t-4k);
+  cursor: pointer;
+  padding: 4px 10px;
+  margin-right: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.row-resolve:hover {
+  background: rgba(245, 166, 35, 0.12);
+  border-color: var(--t-4k-dim);
+}
+
 /* table row delete */
 .row-del {
   background: none;
@@ -1032,4 +1269,522 @@ label.field {
   border-color: #6e2230;
   border-left-color: var(--danger);
   background: linear-gradient(90deg, rgba(239, 91, 110, 0.1), rgba(239, 91, 110, 0.02));
+}
+
+/* Seasons button on a poster card (left rail, after resolve + policy) */
+.poster-seasons {
+  position: absolute;
+  top: 8px;
+  left: 72px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 9, 12, 0.88);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s, transform 0.12s;
+  backdrop-filter: blur(6px);
+}
+.poster-card:hover .poster-seasons {
+  opacity: 1;
+}
+.poster-seasons:hover {
+  background: rgba(45, 212, 191, 0.2);
+  color: var(--t-1080);
+  border-color: var(--t-1080-dim);
+}
+.poster-seasons:active {
+  transform: scale(0.92);
+}
+
+/* Add dialog: monitor-all vs choose-seasons segmented control */
+.monitor-choice {
+  display: flex;
+  gap: 6px;
+}
+.monitor-choice .seg {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--ink-dim);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.monitor-choice .seg.on {
+  background: rgba(45, 212, 191, 0.12);
+  border-color: var(--t-1080-dim);
+  color: var(--t-1080);
+}
+
+/* Add dialog: per-season checkbox chips */
+.season-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.season-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--ink-dim);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  user-select: none;
+}
+.season-chip.on {
+  background: rgba(45, 212, 191, 0.12);
+  border-color: var(--t-1080-dim);
+  color: var(--t-1080);
+}
+.season-chip input {
+  accent-color: var(--t-1080);
+}
+
+/* Season status dialog */
+.season-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.season-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.season-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 160px;
+}
+.season-num {
+  font-weight: 600;
+}
+.season-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.count-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+}
+.season-row .btn {
+  margin-left: auto;
+}
+
+/* ---- Reconciler health card + liveness dots ----------------------------- */
+.rec-health {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+.rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+  background: var(--ink-faint);
+}
+.rec-ok .rec-dot {
+  background: var(--ok);
+  box-shadow: 0 0 10px 1px rgba(78, 201, 154, 0.55);
+}
+.rec-warn .rec-dot {
+  background: var(--t-4k);
+  box-shadow: 0 0 10px 1px rgba(245, 166, 35, 0.5);
+}
+.rec-err .rec-dot {
+  background: var(--danger);
+  box-shadow: 0 0 10px 1px rgba(239, 91, 110, 0.55);
+}
+.rec-off .rec-dot {
+  background: var(--ink-faint);
+}
+.rec-body strong {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+}
+.rec-meta {
+  margin: 3px 0 0;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.rec-err-text {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.rec-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.rec-foot .rec-dot {
+  margin-top: 0;
+}
+
+/* ============================================================
+   Responsive / mobile layer
+   ------------------------------------------------------------
+   Everything above is the desktop design, untouched. Below:
+   the mobile chrome (top bar + off-canvas drawer) defaults to
+   hidden, then a single 860px breakpoint reshapes the layout,
+   with a 560px pass for small-phone tuning. Desktop (≥861px)
+   never enters these blocks.
+   ============================================================ */
+
+/* Mobile chrome — present in the DOM always, shown only on mobile */
+.topbar {
+  display: none;
+}
+.drawer-scrim {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  /* ---- Shell: drop the two-column grid -------------------------------- */
+  .shell {
+    display: block;
+    min-height: 100%;
+  }
+
+  /* ---- Top bar (hamburger / brand / settings) ------------------------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    background: rgba(12, 13, 17, 0.82);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-burger {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .topbar-brand {
+    flex: 1;
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .topbar-brand .dot {
+    color: var(--t-1080);
+  }
+  .topbar-gear {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    color: var(--ink-dim);
+    font-size: 19px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* ---- Sidebar → off-canvas drawer ------------------------------------ */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    height: 100%;
+    width: 270px;
+    max-width: 82vw;
+    z-index: 60;
+    background: var(--bg-elev);
+    border-right: 1px solid var(--line);
+    padding: calc(env(safe-area-inset-top) + 22px) 18px
+      calc(env(safe-area-inset-bottom) + 22px);
+    transform: translateX(-100%);
+    transition: transform 0.24s ease;
+    overflow-y: auto;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
+  }
+  .nav a {
+    padding: 14px 12px; /* roomier tap targets in the drawer */
+  }
+
+  /* ---- Drawer dimmer -------------------------------------------------- */
+  .drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(6, 7, 10, 0.6);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.24s ease;
+  }
+  .drawer-scrim.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ---- Main content --------------------------------------------------- */
+  .main {
+    padding: 18px 16px calc(env(safe-area-inset-bottom) + 44px);
+    max-width: none;
+  }
+  .page-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .page-title {
+    font-size: 30px;
+  }
+  .health-row {
+    gap: 8px;
+  }
+
+  /* ---- Tables → stacked label/value cards ----------------------------- */
+  .panel:has(.table) {
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
+  .table thead {
+    display: none;
+  }
+  .table,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+    width: 100%;
+  }
+  .table tr {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 4px 4px;
+    margin-bottom: 12px;
+  }
+  .table tr:hover td {
+    background: none; /* kill the desktop row-hover tint */
+  }
+  .table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .table tr td:last-child {
+    border-bottom: none;
+  }
+  .table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .table td:not([data-label])::before,
+  .table td[data-label=""]::before {
+    content: none;
+  }
+  .table td[data-label="Progress"] .progress {
+    flex: 1;
+    min-width: 0;
+    max-width: 65%;
+    margin-left: auto;
+  }
+  .table td.row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .table td.row-actions::before {
+    width: 100%; /* label on its own line above the buttons */
+  }
+
+  /* ---- Poster grid: 2-up, always-visible touch controls --------------- */
+  .poster-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  /* On touch there is no :hover — surface the action buttons permanently.
+     Drop the row BELOW the tier badge (which owns top-left at top:7) so the
+     two never overlap; the buttons form a small toolbar underneath it. */
+  .poster-policy,
+  .poster-seasons,
+  .poster-resolve,
+  .poster-del {
+    opacity: 1;
+    width: 30px;
+    height: 30px;
+    top: 40px;
+  }
+  .poster-resolve {
+    left: 6px;
+  }
+  .poster-policy {
+    left: 42px;
+  }
+  .poster-seasons {
+    left: 78px;
+  }
+  .poster-del {
+    right: 6px;
+  }
+
+  /* ---- Dialogs → bottom sheets ---------------------------------------- */
+  .scrim {
+    place-items: end center;
+    padding: 0;
+  }
+  .dialog {
+    width: 100%;
+    max-width: none;
+    border-radius: 18px 18px 0 0;
+    max-height: 92dvh;
+    overflow-y: auto;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .dialog-head {
+    padding-top: 26px; /* room for the drag handle */
+  }
+  .dialog-head::before {
+    content: "";
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--line);
+    z-index: 2;
+  }
+  .tier-toggle {
+    flex-wrap: wrap;
+  }
+  .tier-toggle .opts {
+    margin-left: 0;
+    width: 100%;
+  }
+  .tier-toggle .opts .input {
+    flex: 1;
+  }
+  .fallback,
+  .fallback .actions {
+    flex-wrap: wrap;
+  }
+  .op-summary {
+    flex-wrap: wrap;
+  }
+
+  /* ---- Tap targets & inputs ------------------------------------------- */
+  .btn {
+    min-height: 44px;
+  }
+  .view-toggle button {
+    min-height: 40px;
+    padding: 10px 14px;
+  }
+  /* 16px keeps iOS Safari from zooming the page on input focus */
+  .input,
+  select.input {
+    min-height: 46px;
+    font-size: 16px;
+  }
+  .season-chip {
+    padding: 8px 12px;
+  }
+  .search-bar {
+    flex-wrap: wrap;
+  }
+
+  /* ---- Toast spans the bottom ----------------------------------------- */
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + 12px);
+    max-width: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .page-title {
+    font-size: 26px;
+  }
+  .poster-title {
+    font-size: 13px;
+  }
+  .poster-meta {
+    font-size: 10px;
+  }
+  /* tighten the rail a touch more so 4 buttons fit a ~320px-wide phone */
+  .poster-policy,
+  .poster-seasons,
+  .poster-resolve,
+  .poster-del {
+    width: 28px;
+    height: 28px;
+  }
+  .poster-policy {
+    left: 40px;
+  }
+  .poster-seasons {
+    left: 74px;
+  }
 }

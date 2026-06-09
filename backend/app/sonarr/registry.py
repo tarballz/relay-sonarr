@@ -47,3 +47,24 @@ class Registry:
 
     def has_fallback(self, instance_id: str) -> bool:
         return bool(self._chains.get(instance_id))
+
+    def set_chains(self, chains: dict[str, list[FallbackStep]]) -> None:
+        """Replace the live fallback chains (used by the editable-settings API and
+        at startup to apply a DB-stored override on top of config.yaml)."""
+        self._chains = dict(chains)
+
+    @staticmethod
+    def coerce_chains(payload: dict) -> dict[str, list[FallbackStep]]:
+        """Build chain steps from the JSON shape used by the API / DB override
+        ({startId: [{instanceId, profile?, rootFolder?}, ...]})."""
+        return {
+            start: [
+                FallbackStep(
+                    instanceId=s["instanceId"],
+                    profile=s.get("profile"),
+                    root_folder=s.get("rootFolder"),
+                )
+                for s in steps
+            ]
+            for start, steps in payload.items()
+        }

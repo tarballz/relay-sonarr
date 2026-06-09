@@ -9,6 +9,8 @@ const PHASE_LABEL = {
   grab: "Start download",
   move: "Move tier",
   swap: "Switch profile",
+  gaps: "Find gaps",
+  split: "Split tiers",
   fallback: "Decide next",
   exhausted: "Result",
 };

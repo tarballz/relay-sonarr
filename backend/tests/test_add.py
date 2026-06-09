@@ -44,6 +44,28 @@ def test_build_add_payload_search_now_false():
     assert payload["addOptions"]["searchForMissingEpisodes"] is False
 
 
+def test_build_add_payload_monitored_seasons_sets_flags():
+    series = {
+        "tvdbId": 1,
+        "seasons": [
+            {"seasonNumber": 0, "monitored": True},
+            {"seasonNumber": 1, "monitored": True},
+            {"seasonNumber": 2, "monitored": True},
+        ],
+    }
+    payload = build_add_payload(series, 1, "/tv", monitored_seasons={1})
+    by_num = {s["seasonNumber"]: s for s in payload["seasons"]}
+    assert by_num[1]["monitored"] is True
+    assert by_num[0]["monitored"] is False
+    assert by_num[2]["monitored"] is False
+
+
+def test_build_add_payload_monitored_seasons_none_leaves_seasons_untouched():
+    series = {"tvdbId": 1, "seasons": [{"seasonNumber": 1, "monitored": True}]}
+    payload = build_add_payload(series, 1, "/tv")
+    assert payload["seasons"] == [{"seasonNumber": 1, "monitored": True}]
+
+
 # --- add over HTTP -----------------------------------------------------------
 
 @respx.mock
@@ -64,3 +86,48 @@ async def test_add_to_instance_looks_up_then_posts():
     assert body["tvdbId"] == 81189
     assert body["qualityProfileId"] == 1
     assert result["id"] == 7
+
+
+async def _nosleep(_):
+    return None
+
+
+@respx.mock
+async def test_add_to_instance_unmonitors_off_seasons():
+    reg = make_registry()
+    respx.get(f"{A}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 81189, "title": "BB"}])
+    )
+    respx.post(f"{A}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 7}))
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{A}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 501, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": False},
+        {"id": 502, "seasonNumber": 2, "episodeNumber": 1, "monitored": True, "hasFile": False},
+    ]))
+    monitor = respx.put(f"{A}/api/v3/episode/monitor").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await add_to_instance(
+        reg, "1080p", tvdb_id=81189, quality_profile_id=1, root_folder_path="/tv",
+        monitored_seasons={1}, sleep=_nosleep,
+    )
+
+    body = _json.loads(monitor.calls.last.request.content)
+    assert body["episodeIds"] == [502]  # season 2 unmonitored
+    assert body["monitored"] is False
+
+
+@respx.mock
+async def test_add_to_instance_no_season_filter_does_not_wait_or_monitor():
+    reg = make_registry()
+    respx.get(f"{A}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 81189, "title": "BB"}])
+    )
+    respx.post(f"{A}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 7}))
+    monitor = respx.put(f"{A}/api/v3/episode/monitor").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await add_to_instance(reg, "1080p", tvdb_id=81189, quality_profile_id=1, root_folder_path="/tv")
+    assert not monitor.called

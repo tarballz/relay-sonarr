@@ -87,9 +87,46 @@ class SonarrClient:
         """Episodes for a series (GET /episode?seriesId=)."""
         return await self._get("/episode", {"seriesId": series_id})
 
+    async def history(self, *, page: int = 1, page_size: int = 200,
+                      event_type: str | None = None, include_episode: bool = True) -> dict:
+        """Recent history (GET /history) — grab/import/failed events per episode."""
+        params: dict = {
+            "page": page,
+            "pageSize": page_size,
+            "includeEpisode": str(include_episode).lower(),
+        }
+        if event_type:
+            params["eventType"] = event_type
+        return await self._get("/history", params)
+
+    async def history_since(self, date: str, *, event_type: str | None = None,
+                            include_episode: bool = True) -> list[dict]:
+        """History since an ISO date (GET /history/since) — cheaper incremental poll."""
+        params: dict = {"date": date, "includeEpisode": str(include_episode).lower()}
+        if event_type:
+            params["eventType"] = event_type
+        return await self._get("/history/since", params)
+
+    async def blocklist(self, *, page: int = 1, page_size: int = 200) -> dict:
+        """Blocklisted releases (GET /blocklist)."""
+        return await self._get("/blocklist", {"page": page, "pageSize": page_size})
+
     async def releases(self, episode_id: int) -> list[dict]:
         """Interactive release search for an episode (GET /release?episodeId=)."""
         return await self._get("/release", {"episodeId": episode_id})
+
+    async def set_episode_monitor(self, episode_ids: list[int], monitored: bool):
+        """Toggle monitoring for a set of episodes (PUT /episode/monitor).
+
+        Used by the gap-fill split to monitor only the missing episodes on the
+        fallback tier (and unmonitor them on the origin). A no-op on an empty
+        list so callers don't have to guard it.
+        """
+        if not episode_ids:
+            return None
+        return await self._put(
+            "/episode/monitor", {"episodeIds": episode_ids, "monitored": monitored}
+        )
 
     async def add_series(self, payload: dict) -> dict:
         """Add a series to this instance (POST /series)."""
