@@ -37,7 +37,8 @@ class Reconciler:
     def __init__(self, registry, db, operations, *, interval: float = 1800,
                  jitter: float = 120, availability_ttl: float = placement.DEFAULT_TTL,
                  clock=None, sleep=asyncio.sleep, wait_attempts: int = 10,
-                 wait_delay: float = 1.5, enabled: bool = True):
+                 wait_delay: float = 1.5, enabled: bool = True,
+                 stalled_cleanup: bool = True, stalled_cap: int = 25):
         self.registry = registry
         self.db = db
         self.ops = operations
@@ -52,6 +53,8 @@ class Reconciler:
         self._inflight: set[int] = set()  # single-flight per series (this process)
         # ---- Health/observability (read via status()/is_healthy()) ----
         self.enabled = enabled
+        self.stalled_cleanup = stalled_cleanup
+        self._stalled_cap = stalled_cap
         self._started_at = self.now()
         self._last_tick_started_at: datetime | None = None
         self._last_tick_finished_at: datetime | None = None
@@ -144,6 +147,16 @@ class Reconciler:
     async def tick(self) -> dict:
         """One reconciliation pass over all active intents."""
         await poller.poll_all(self.registry, self.db, now=self.now())
+        if self.stalled_cleanup:
+            defaults = await settings_store.get_defaults(self.db)
+            try:
+                await poller.sweep_stalled(
+                    self.registry, self.db, self.ops,
+                    stalled_days=defaults.get("stalledDays", 3),
+                    cap=self._stalled_cap, now=self.now(),
+                )
+            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
+                logger.exception("stalled sweep failed")
         await self._ensure_intents()
         results = []
         for intent in await intent_store.all_active(self.db):

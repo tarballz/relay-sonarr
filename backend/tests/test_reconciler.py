@@ -226,3 +226,48 @@ async def test_tick_skips_paused_series(tmp_path):
     out = await rec.tick()
     assert out["reconciled"] == []  # paused → not acted on
     assert (await intent_store.get(db, TVDB))["paused"] == 1  # ensure() preserved pause
+
+
+async def test_tick_runs_stalled_sweep_when_enabled(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make(tmp_path)
+    rec.stalled_cleanup = True
+    called = {}
+
+    async def fake_poll_all(*a, **k):
+        return {"polled": []}
+
+    async def fake_sweep(registry, db_, ops_, *, stalled_days, cap, now):
+        called["days"] = stalled_days
+        called["cap"] = cap
+        return 0
+
+    monkeypatch.setattr("app.reconciler.poller.poll_all", fake_poll_all)
+    monkeypatch.setattr("app.reconciler.poller.sweep_stalled", fake_sweep)
+    monkeypatch.setattr(rec, "_ensure_intents", lambda: _anoop())
+
+    await rec.tick()
+    assert called.get("cap") == rec._stalled_cap
+
+
+async def test_tick_skips_stalled_sweep_when_disabled(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make(tmp_path)
+    rec.stalled_cleanup = False
+    called = {"ran": False}
+
+    async def fake_poll_all(*a, **k):
+        return {"polled": []}
+
+    async def fake_sweep(*a, **k):
+        called["ran"] = True
+        return 0
+
+    monkeypatch.setattr("app.reconciler.poller.poll_all", fake_poll_all)
+    monkeypatch.setattr("app.reconciler.poller.sweep_stalled", fake_sweep)
+    monkeypatch.setattr(rec, "_ensure_intents", lambda: _anoop())
+
+    await rec.tick()
+    assert called["ran"] is False
+
+
+async def _anoop():
+    return None
