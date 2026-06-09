@@ -27,6 +27,10 @@ def _reconciler_enabled() -> bool:
     return os.environ.get("RECONCILER_ENABLED", "true").lower() != "false"
 
 
+def _stalled_cleanup_enabled() -> bool:
+    return os.environ.get("STALLED_CLEANUP_ENABLED", "true").lower() != "false"
+
+
 def _configure_logging() -> None:
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
@@ -60,7 +64,8 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001 - a bad override must not block startup
         logging.getLogger("app").exception("failed to apply fallback-chain override")
     app.state.reconciler = Reconciler(
-        app.state.registry, app.state.db, app.state.operations, enabled=enabled
+        app.state.registry, app.state.db, app.state.operations,
+        enabled=enabled, stalled_cleanup=_stalled_cleanup_enabled(),
     )
     task = None
     if enabled:
