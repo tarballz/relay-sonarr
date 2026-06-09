@@ -81,6 +81,31 @@ async def test_queue_includes_episode(client):
 
 
 @respx.mock
+async def test_queue_fetches_all_pages(client):
+    """Sonarr paginates /queue (default pageSize 10) and sorts completed items
+    first, so a single page hides active downloads. We must fetch every page."""
+    def responder(request):
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, json={
+                "page": 1, "pageSize": 200, "totalRecords": 3,
+                "records": [{"id": 1}, {"id": 2}],
+            })
+        return httpx.Response(200, json={
+            "page": 2, "pageSize": 200, "totalRecords": 3,
+            "records": [{"id": 3}],
+        })
+
+    route = respx.get(f"{BASE}/api/v3/queue").mock(side_effect=responder)
+    result = await client.queue()
+
+    assert [r["id"] for r in result["records"]] == [1, 2, 3]  # all pages, not just page 1
+    assert route.call_count == 2
+    assert route.calls[0].request.url.params["includeEpisode"] == "true"
+    assert route.calls[0].request.url.params["pageSize"] == "200"
+
+
+@respx.mock
 async def test_episodes_for_series(client):
     route = respx.get(f"{BASE}/api/v3/episode").mock(
         return_value=httpx.Response(200, json=[{"id": 10, "monitored": True}])

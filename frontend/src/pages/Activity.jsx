@@ -37,7 +37,7 @@ export default function Activity() {
               </tr>
             </thead>
             <tbody>
-              {data.map((r, i) => {
+              {sortQueue(data).map((r, i) => {
                 const pct = r.size ? Math.round(((r.size - (r.sizeleft ?? 0)) / r.size) * 100) : 0;
                 const ep = r.episode;
                 return (
@@ -76,4 +76,24 @@ function Status({ r }) {
 
 function pad(n) {
   return String(n ?? 0).padStart(2, "0");
+}
+
+// Surface what's actually moving: active downloads first, then queued, then
+// stuck/completed (e.g. import-blocked) last. Within downloads, closest-to-done
+// first. Sonarr returns completed items first by default, which buries live
+// downloads — this re-orders for the "what's happening now" view.
+function queueRank(r) {
+  const s = (r.trackedDownloadState || r.status || "").toLowerCase();
+  if (s.includes("download")) return 0;
+  if (s.includes("queue") || s.includes("delay")) return 1;
+  if (s.includes("import")) return 3; // completed-but-importing/blocked → last
+  if (s.includes("complet")) return 3;
+  return 2;
+}
+
+function sortQueue(data) {
+  const progress = (r) => (r.size ? (r.size - (r.sizeleft ?? 0)) / r.size : 0);
+  return [...(data || [])].sort(
+    (a, b) => queueRank(a) - queueRank(b) || progress(b) - progress(a)
+  );
 }

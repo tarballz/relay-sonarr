@@ -80,8 +80,28 @@ class SonarrClient:
         return await self._get("/diskspace")
 
     async def queue(self) -> dict:
-        """Download queue with episode details (GET /queue?includeEpisode=true)."""
-        return await self._get("/queue", {"includeEpisode": "true"})
+        """Full download queue with episode details (GET /queue?includeEpisode=true).
+
+        Sonarr paginates /queue (default pageSize 10) and sorts completed /
+        import-blocked items first, so a single default page can be entirely
+        stuck-completed items and hide every active download. Fetch every page
+        and return them as one envelope (records aggregated)."""
+        page = 1
+        first = await self._get(
+            "/queue", {"includeEpisode": "true", "pageSize": 200, "page": page}
+        )
+        records = list(first.get("records", []))
+        total = first.get("totalRecords", len(records))
+        while len(records) < total:
+            page += 1
+            nxt = await self._get(
+                "/queue", {"includeEpisode": "true", "pageSize": 200, "page": page}
+            )
+            batch = nxt.get("records", [])
+            if not batch:  # guard against a stale totalRecords looping forever
+                break
+            records.extend(batch)
+        return {**first, "records": records}
 
     async def episodes(self, series_id: int) -> list[dict]:
         """Episodes for a series (GET /episode?seriesId=)."""
