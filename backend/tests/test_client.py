@@ -211,6 +211,15 @@ async def test_set_episode_monitor_noop_on_empty(client):
 
 
 @respx.mock
+async def test_delete_queue_item_removes_and_blocklists(client):
+    route = respx.delete(f"{BASE}/api/v3/queue/42").mock(return_value=httpx.Response(200))
+    await client.delete_queue_item(42)
+    params = route.calls.last.request.url.params
+    assert params["removeFromClient"] == "true"
+    assert params["blocklist"] == "true"
+
+
+@respx.mock
 async def test_command_posts_name(client):
     route = respx.post(f"{BASE}/api/v3/command").mock(
         return_value=httpx.Response(201, json={"id": 99, "name": "RefreshSeries"})

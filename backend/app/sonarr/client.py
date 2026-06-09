@@ -171,3 +171,17 @@ class SonarrClient:
                 "addImportListExclusion": str(add_exclusion).lower(),
             },
         )
+
+    async def delete_queue_item(self, queue_id: int, *, remove_from_client: bool = True,
+                                blocklist: bool = True) -> None:
+        """Remove a queue item (DELETE /queue/{id}).
+
+        With blocklist=true Sonarr blocklists the release so it isn't re-grabbed and,
+        leaving skipRedownload at its default, searches for a replacement."""
+        await self._delete(
+            f"/queue/{queue_id}",
+            {
+                "removeFromClient": str(remove_from_client).lower(),
+                "blocklist": str(blocklist).lower(),
+            },
+        )
