@@ -9,9 +9,12 @@ ignored. Idempotent: re-applying the same history is a no-op.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from app.services.fanout import gather_instances
+
+logger = logging.getLogger(__name__)
 from app.sonarr.registry import Instance, Registry
 from app.store import placements as place_store
 
@@ -140,3 +143,72 @@ async def poll_all(registry: Registry, db, *, now: datetime | None = None, **kw)
         total += len(res)
         out.append({"instanceId": inst.id, "transitions": res})
     return {"instances": out, "transitionCount": total}
+
+
+def _is_stalled(record: dict, *, now: datetime, stalled_days: float) -> bool:
+    """A torrent downloading at literal 0% (no bytes) since longer than the threshold."""
+    if record.get("protocol") != "torrent":
+        return False
+    if (record.get("status") or "").lower() != "downloading":
+        return False
+    size = record.get("size") or 0
+    if size <= 0 or record.get("sizeleft") != size:  # sizeleft==size means 0% downloaded
+        return False
+    added = record.get("added")
+    if not added:
+        return False
+    try:
+        added_dt = datetime.fromisoformat(str(added).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (now - added_dt).total_seconds() > stalled_days * 86400.0
+
+
+def _stalled_title(record: dict) -> str:
+    base = (record.get("series") or {}).get("title") or record.get("title") or "unknown"
+    ep = record.get("episode") or {}
+    if ep.get("seasonNumber") is not None and ep.get("episodeNumber") is not None:
+        return f"{base} S{ep['seasonNumber']:02d}E{ep['episodeNumber']:02d}"
+    return base
+
+
+async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
+                        now: datetime) -> int:
+    """Remove torrents stuck at 0% past the threshold. Sonarr removes them from the
+    client, blocklists the release, and re-searches. Returns the number removed."""
+    removed = 0
+    skipped = 0
+    for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
+        if isinstance(res, Exception):
+            continue
+        for r in res.get("records", []):
+            if not _is_stalled(r, now=now, stalled_days=stalled_days):
+                continue
+            if removed >= cap:
+                skipped += 1
+                continue
+            added_dt = datetime.fromisoformat(str(r["added"]).replace("Z", "+00:00"))
+            age_days = int((now - added_dt).total_seconds() // 86400)
+            title = _stalled_title(r)
+            op_id = await ops.start(
+                kind="stalled-cleanup", title=title, tvdb_id=r.get("seriesId") or 0,
+                started_at=now.isoformat(), source="reconciler",
+            )
+            try:
+                await inst.client.delete_queue_item(r["id"])
+                await ops.add_step(op_id, {
+                    "phase": "remove", "status": "done",
+                    "message": f"Removed stalled torrent — {title}, 0% for {age_days}d "
+                               f"(blocklisted; Sonarr re-searching)",
+                })
+                await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
+                                 finished_at=now.isoformat())
+                removed += 1
+            except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
+                await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
+                logger.warning("failed to remove stalled torrent %s: %s", r.get("id"), exc)
+    if skipped:
+        logger.warning("stalled sweep hit per-tick cap (%d); %d deferred to next tick", cap, skipped)
+    if removed:
+        logger.info("stalled sweep removed %d torrent(s)", removed)
+    return removed
