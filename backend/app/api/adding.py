@@ -24,10 +24,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _min_seeders(db) -> int:
-    """The stored minSeeders default (the gate threshold; 0 disables it)."""
+async def _seeder_opts(db) -> tuple[int, bool]:
+    """(minSeeders gate threshold, seederGrab flag) from the stored defaults."""
     defaults = await settings_store.get_defaults(db)
-    return int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS))
+    return (
+        int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS)),
+        bool(defaults.get("seederGrab", True)),
+    )
 
 
 async def _event_stream(ops: OperationStore, op_id: int, coro_factory):
@@ -98,6 +101,7 @@ async def smart_add(
     req: SmartAddRequest, reg: Registry = Depends(get_registry), db=Depends(get_db)
 ):
     """Add to the target tier and verify a release exists; suggest fallback if not."""
+    min_seeders, seeder_grab = await _seeder_opts(db)
     try:
         return await add_service.smart_add(
             reg,
@@ -109,7 +113,8 @@ async def smart_add(
                 "monitored": req.monitored,
                 "monitored_seasons": req.monitoredSeasons,
             },
-            min_seeders=await _min_seeders(db),
+            min_seeders=min_seeders,
+            seeder_grab=seeder_grab,
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -120,6 +125,7 @@ async def advance_fallback(
     req: AdvanceFallbackRequest, reg: Registry = Depends(get_registry), db=Depends(get_db)
 ):
     """Execute the next fallback-chain step; returns placed / fallback_suggested / exhausted."""
+    min_seeders, seeder_grab = await _seeder_opts(db)
     try:
         return await add_service.advance_fallback(
             reg,
@@ -128,7 +134,8 @@ async def advance_fallback(
             from_series_id=req.fromSeriesId,
             chain_key=req.chainKey,
             next_index=req.nextIndex,
-            min_seeders=await _min_seeders(db),
+            min_seeders=min_seeders,
+            seeder_grab=seeder_grab,
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -158,9 +165,8 @@ async def availability(
 ):
     """Check release availability for an already-added series on an instance."""
     try:
-        return await check_availability(
-            reg, instanceId, seriesId, min_seeders=await _min_seeders(db)
-        )
+        min_seeders, _ = await _seeder_opts(db)
+        return await check_availability(reg, instanceId, seriesId, min_seeders=min_seeders)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -180,7 +186,7 @@ async def smart_add_stream(
 ):
     """Live (SSE) smart-add: streams each step, ends with the normal result dict."""
     op_id = await ops.start(kind="smart-add", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
-    min_seeders = await _min_seeders(db)
+    min_seeders, seeder_grab = await _seeder_opts(db)
 
     async def factory(emit):
         return await add_service.smart_add(
@@ -195,6 +201,7 @@ async def smart_add_stream(
             },
             emit=emit,
             min_seeders=min_seeders,
+            seeder_grab=seeder_grab,
         )
 
     return StreamingResponse(
@@ -216,7 +223,7 @@ async def advance_fallback_stream(
 ):
     """Live (SSE) fallback step: streams move/swap/search, ends with the result dict."""
     op_id = await ops.start(kind="advance", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
-    min_seeders = await _min_seeders(db)
+    min_seeders, seeder_grab = await _seeder_opts(db)
 
     async def factory(emit):
         return await add_service.advance_fallback(
@@ -228,6 +235,7 @@ async def advance_fallback_stream(
             next_index=nextIndex,
             emit=emit,
             min_seeders=min_seeders,
+            seeder_grab=seeder_grab,
         )
 
     return StreamingResponse(
@@ -249,7 +257,7 @@ async def reattempt_stream(
 ):
     """Live (SSE) re-attempt: re-search in place; ends placed / fallback_suggested / exhausted."""
     op_id = await ops.start(kind="reattempt", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
-    min_seeders = await _min_seeders(db)
+    min_seeders, seeder_grab = await _seeder_opts(db)
 
     async def factory(emit):
         return await add_service.reattempt_search(
@@ -261,6 +269,7 @@ async def reattempt_stream(
             next_index=nextIndex,
             emit=emit,
             min_seeders=min_seeders,
+            seeder_grab=seeder_grab,
         )
 
     return StreamingResponse(

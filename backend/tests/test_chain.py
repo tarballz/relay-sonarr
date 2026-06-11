@@ -106,6 +106,73 @@ async def test_smart_add_suggests_first_chain_step():
 
 
 @respx.mock
+async def test_smart_add_grabs_highest_seeder_release_then_series_search():
+    import json as _json
+
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 75710, "title": "BB"}])
+    )
+    respx.post(f"{B}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 10}))
+    cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[
+            {"guid": "g1", "indexerId": 3, "rejected": False, "protocol": "torrent", "seeders": 5},
+            {"guid": "g2", "indexerId": 7, "rejected": False, "protocol": "torrent", "seeders": 50},
+        ])
+    )
+    grab = respx.post(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json={"guid": "g2"})
+    )
+
+    result = await smart_add(
+        reg, tvdb_id=75710, target_id="4k",
+        target_opts={"quality_profile_id": 1, "root_folder_path": "/tv4k"}, sleep=_nosleep,
+    )
+
+    assert result["status"] == "added"
+    body = _json.loads(grab.calls.last.request.content)
+    assert body == {"guid": "g2", "indexerId": 7}
+    commands = [_json.loads(c.request.content)["name"] for c in cmd.calls]
+    assert "SeriesSearch" in commands
+    # Raw releases never leak into the result payload (it goes over SSE / to the UI).
+    assert "releases" not in result["availability"]
+
+
+@respx.mock
+async def test_smart_add_grab_500_still_series_search():
+    import json as _json
+
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 75710, "title": "BB"}])
+    )
+    respx.post(f"{B}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 10}))
+    cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[
+            {"guid": "g1", "indexerId": 3, "rejected": False, "protocol": "torrent", "seeders": 50},
+        ])
+    )
+    respx.post(f"{B}/api/v3/release").mock(return_value=httpx.Response(500))
+
+    result = await smart_add(
+        reg, tvdb_id=75710, target_id="4k",
+        target_opts={"quality_profile_id": 1, "root_folder_path": "/tv4k"}, sleep=_nosleep,
+    )
+
+    assert result["status"] == "added"
+    commands = [_json.loads(c.request.content)["name"] for c in cmd.calls]
+    assert "SeriesSearch" in commands
+
+
+@respx.mock
 async def test_smart_add_min_seeders_triggers_fallback():
     import json as _json
 
@@ -395,6 +462,43 @@ async def test_advance_same_instance_swaps_profile_and_places():
     assert json.loads(put.calls.last.request.content)["qualityProfileId"] == 7
     assert result["status"] == "placed"
     assert result["seriesId"] == 22
+
+
+@respx.mock
+async def test_advance_same_instance_grabs_after_profile_swap():
+    import json as _json
+
+    reg = make_registry()
+    mock_1080p_profiles()
+    respx.get(f"{A}/api/v3/series/22").mock(
+        return_value=httpx.Response(200, json={"id": 22, "qualityProfileId": 4, "title": "BB"})
+    )
+    respx.put(f"{A}/api/v3/series/22").mock(
+        return_value=httpx.Response(200, json={"id": 22, "qualityProfileId": 7})
+    )
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 2}))
+    respx.get(f"{A}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 5, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{A}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[
+            {"guid": "lo", "indexerId": 3, "rejected": False, "protocol": "torrent", "seeders": 2},
+            {"guid": "hi", "indexerId": 9, "rejected": False, "protocol": "torrent", "seeders": 80},
+        ])
+    )
+    grab = respx.post(f"{A}/api/v3/release").mock(
+        return_value=httpx.Response(200, json={"guid": "hi"})
+    )
+
+    result = await advance_fallback(
+        reg, tvdb_id=75710, from_instance_id="1080p", from_series_id=22,
+        chain_key="4k", next_index=1, sleep=_nosleep,
+    )
+
+    assert result["status"] == "placed"
+    body = _json.loads(grab.calls.last.request.content)
+    assert body == {"guid": "hi", "indexerId": 9}
+    assert "releases" not in result["availability"]
 
 
 @respx.mock

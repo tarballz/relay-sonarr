@@ -95,12 +95,17 @@ def _pick_sample_episode(episodes: list[dict]) -> dict | None:
 
 
 async def check_availability(
-    registry: Registry, instance_id: str, series_id: int, *, min_seeders: int = 0
+    registry: Registry, instance_id: str, series_id: int, *,
+    min_seeders: int = 0, include_releases: bool = False,
 ) -> dict:
     """Run an interactive release search on a sample episode of the series.
 
     Assumes the series already exists on the instance and its episodes have been
     populated (the smart-add orchestration handles add + refresh first).
+
+    ``include_releases`` adds the raw release list to the payload so a caller
+    can reuse this search (e.g. for a direct grab) instead of hitting the
+    indexers again — callers must pop it before emitting the dict to the UI.
     """
     client = registry.get(instance_id).client
     episodes = await client.episodes(series_id)
@@ -126,7 +131,7 @@ async def check_availability(
         rejections.append(
             {"reason": f"fewer than {min_seeders} seeders", "count": filtered}
         )
-    return {
+    result = {
         "instanceId": instance_id,
         "available": qualifying > 0,
         "releaseCount": qualifying,
@@ -135,3 +140,6 @@ async def check_availability(
         "rejectionSummary": rejections,
         "sampledEpisode": {"id": sample["id"], "title": sample.get("title")},
     }
+    if include_releases:
+        result["releases"] = releases
+    return result

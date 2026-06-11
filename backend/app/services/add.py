@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 from app.config import FallbackStep
 from app.episodes import episode_key as _episode_key, find_series_by_tvdb as _find_series_by_tvdb
 from app.services.availability import check_availability
+from app.services.grab import grab_then_search
 from app.sonarr.registry import Registry
 
 
@@ -20,6 +21,14 @@ def _search_message(availability: dict) -> str:
     if total == 0:
         return "No releases found"
     return f"{total} found, {qualifying} qualify"
+
+
+def _grab_message(grab_result: dict, instance_name: str) -> str:
+    release = grab_result.get("release")
+    if grab_result.get("grabbed") and release:
+        return (f"Grabbed '{release.get('title')}' "
+                f"({release.get('seeders')} seeders) on {instance_name} ✓")
+    return f"Release found on {instance_name} — download started ✓"
 
 
 def build_add_payload(
@@ -327,6 +336,7 @@ async def smart_add(
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
     min_seeders: int = 0,
+    seeder_grab: bool = True,
 ) -> dict:
     """Add to the target tier, then verify a release actually exists there.
 
@@ -367,18 +377,24 @@ async def smart_add(
 
     await emit({"phase": "search", "status": "running", "message": f"Searching {target.name} for releases…"})
     availability = await check_availability(
-        registry, target_id, series["id"], min_seeders=min_seeders
+        registry, target_id, series["id"], min_seeders=min_seeders, include_releases=True
     )
+    releases = availability.pop("releases", [])
     await emit({
         "phase": "search", "status": "done",
         "message": _search_message(availability), "data": {"availability": availability},
     })
 
     if availability["available"]:
-        # A release exists here — actually kick off the download now.
-        await client.command("SeriesSearch", seriesId=series["id"])
+        # A release exists here — actually kick off the download now. Grab the
+        # best-seeded torrent directly; SeriesSearch still covers the rest of
+        # the series (and is the fallback if the grab fails).
+        grabbed = await grab_then_search(
+            client, releases=releases, series_id=series["id"],
+            min_seeders=min_seeders, enabled=seeder_grab,
+        )
         await emit({"phase": "grab", "status": "done",
-                    "message": f"Release found on {target.name} — download started ✓"})
+                    "message": _grab_message(grabbed, target.name)})
     if availability["available"] or not registry.fallback_chain(target_id):
         return {
             "status": "added",
@@ -412,6 +428,7 @@ async def advance_fallback(
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
     min_seeders: int = 0,
+    seeder_grab: bool = True,
 ) -> dict:
     """Execute one chain step, then report placed / next-suggestion / exhausted.
 
@@ -463,14 +480,21 @@ async def advance_fallback(
     await emit({"phase": "search", "status": "running",
                 "message": f"Searching {target_name} for releases…"})
     availability = await check_availability(
-        registry, new_instance_id, new_series_id, min_seeders=min_seeders
+        registry, new_instance_id, new_series_id,
+        min_seeders=min_seeders, include_releases=True,
     )
+    releases = availability.pop("releases", [])
     await emit({"phase": "search", "status": "done",
                 "message": _search_message(availability), "data": {"availability": availability}})
 
     if availability["available"]:
+        # A search was already fired above (search_now add or the profile-swap
+        # SeriesSearch), so this is grab-only: snipe the best-seeded torrent.
+        grabbed = await grab_then_search(
+            client, releases=releases, min_seeders=min_seeders, enabled=seeder_grab,
+        )
         await emit({"phase": "grab", "status": "done",
-                    "message": f"Release found on {target_name} — download started ✓"})
+                    "message": _grab_message(grabbed, target_name)})
         return {
             "status": "placed",
             "instanceId": new_instance_id,
@@ -525,6 +549,7 @@ async def reattempt_search(
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
     min_seeders: int = 0,
+    seeder_grab: bool = True,
 ) -> dict:
     """Re-run the interactive search in place; grab if a release now qualifies.
 
@@ -540,15 +565,20 @@ async def reattempt_search(
     await emit({"phase": "search", "status": "running",
                 "message": f"Re-searching {inst.name} for releases…"})
     availability = await check_availability(
-        registry, instance_id, series_id, min_seeders=min_seeders
+        registry, instance_id, series_id,
+        min_seeders=min_seeders, include_releases=True,
     )
+    releases = availability.pop("releases", [])
     await emit({"phase": "search", "status": "done",
                 "message": _search_message(availability), "data": {"availability": availability}})
 
     if availability["available"]:
-        await inst.client.command("SeriesSearch", seriesId=series_id)
+        grabbed = await grab_then_search(
+            inst.client, releases=releases, series_id=series_id,
+            min_seeders=min_seeders, enabled=seeder_grab,
+        )
         await emit({"phase": "grab", "status": "done",
-                    "message": f"Release found on {inst.name} — download started ✓"})
+                    "message": _grab_message(grabbed, inst.name)})
         return {
             "status": "placed",
             "instanceId": instance_id,
