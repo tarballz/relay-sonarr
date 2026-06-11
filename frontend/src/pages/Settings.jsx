@@ -165,6 +165,7 @@ function DefaultsEditor({ onToast, qc }) {
       allowSplit: data.allowSplit ?? true,
       escalateAfterDays: data.escalateAfterDays ?? 0,
       stalledDays: data.stalledDays ?? 3,
+      minSeeders: data.minSeeders ?? 3,
     });
   }, [JSON.stringify(data)]);
 
@@ -215,6 +216,21 @@ function DefaultsEditor({ onToast, qc }) {
             onChange={(e) => setForm((f) => ({ ...f, stalledDays: Number(e.target.value) }))}
           />
         </label>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Minimum torrent seeders to count a release (0 = off)
+          <input
+            className="input"
+            type="number"
+            min="0"
+            value={form.minSeeders}
+            onChange={(e) => setForm((f) => ({ ...f, minSeeders: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          Applies to Relay's availability checks and tier decisions only — Sonarr's own
+          RSS/automatic grabs don't see it. Set "Minimum Seeders" on your indexers in
+          Sonarr/Prowlarr as the enforcement backstop.
+        </div>
         <div style={{ marginTop: 16 }}>
           <button className="btn primary" disabled={busy} onClick={save}>
             {busy ? <Spinner /> : "Save defaults"}
