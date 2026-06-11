@@ -4,7 +4,7 @@ import pytest
 import respx
 
 from app.config import Config, FallbackStep, InstanceConfig
-from app.services.add import advance_fallback, resolve_step, smart_add
+from app.services.add import advance_fallback, reattempt_search, resolve_step, smart_add
 from app.sonarr.registry import Registry
 
 A = "http://10.0.0.1:8989"  # 1080p
@@ -103,6 +103,60 @@ async def test_smart_add_suggests_first_chain_step():
         "tvdbId": 75710, "fromInstanceId": "4k", "fromSeriesId": 10,
         "chainKey": "4k", "nextIndex": 0,
     }
+
+
+@respx.mock
+async def test_smart_add_min_seeders_triggers_fallback():
+    import json as _json
+
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 75710, "title": "BB"}])
+    )
+    respx.post(f"{B}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 10}))
+    cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+    )
+    # A release exists and isn't rejected — but it's a 1-seeder torrent.
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(
+            200, json=[{"rejected": False, "protocol": "torrent", "seeders": 1}]
+        )
+    )
+    mock_1080p_profiles()
+
+    result = await smart_add(
+        reg, tvdb_id=75710, target_id="4k",
+        target_opts={"quality_profile_id": 1, "root_folder_path": "/tv4k"},
+        sleep=_nosleep, min_seeders=3,
+    )
+
+    assert result["status"] == "fallback_suggested"
+    commands = [_json.loads(c.request.content)["name"] for c in cmd.calls]
+    assert "SeriesSearch" not in commands
+
+
+@respx.mock
+async def test_reattempt_min_seeders_still_unavailable():
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(
+            200, json=[{"rejected": False, "protocol": "torrent", "seeders": 1}]
+        )
+    )
+    mock_1080p_profiles()
+
+    result = await reattempt_search(
+        reg, tvdb_id=75710, instance_id="4k", series_id=10,
+        chain_key="4k", next_index=0, sleep=_nosleep, min_seeders=3,
+    )
+
+    assert result["status"] == "fallback_suggested"
+    assert result["availability"]["seederFiltered"] == 1
 
 
 @respx.mock

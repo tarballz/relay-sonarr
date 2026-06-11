@@ -11,9 +11,10 @@ from starlette.responses import StreamingResponse
 from app.models import AddRequest, AdvanceFallbackRequest, SmartAddRequest, SpillSeasonRequest
 from app.services import add as add_service
 from app.services import orchestrate
-from app.services.availability import check_availability
+from app.services.availability import DEFAULT_MIN_SEEDERS, check_availability
 from app.sonarr.registry import Registry
-from app.state import get_operations, get_registry
+from app.state import get_db, get_operations, get_registry
+from app.store import settings as settings_store
 from app.store.operations import OperationStore
 
 router = APIRouter(prefix="/api", tags=["add"])
@@ -21,6 +22,12 @@ router = APIRouter(prefix="/api", tags=["add"])
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _min_seeders(db) -> int:
+    """The stored minSeeders default (the gate threshold; 0 disables it)."""
+    defaults = await settings_store.get_defaults(db)
+    return int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS))
 
 
 async def _event_stream(ops: OperationStore, op_id: int, coro_factory):
@@ -87,7 +94,9 @@ async def add(req: AddRequest, reg: Registry = Depends(get_registry)):
 
 
 @router.post("/smart-add")
-async def smart_add(req: SmartAddRequest, reg: Registry = Depends(get_registry)):
+async def smart_add(
+    req: SmartAddRequest, reg: Registry = Depends(get_registry), db=Depends(get_db)
+):
     """Add to the target tier and verify a release exists; suggest fallback if not."""
     try:
         return await add_service.smart_add(
@@ -100,13 +109,16 @@ async def smart_add(req: SmartAddRequest, reg: Registry = Depends(get_registry))
                 "monitored": req.monitored,
                 "monitored_seasons": req.monitoredSeasons,
             },
+            min_seeders=await _min_seeders(db),
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/advance-fallback")
-async def advance_fallback(req: AdvanceFallbackRequest, reg: Registry = Depends(get_registry)):
+async def advance_fallback(
+    req: AdvanceFallbackRequest, reg: Registry = Depends(get_registry), db=Depends(get_db)
+):
     """Execute the next fallback-chain step; returns placed / fallback_suggested / exhausted."""
     try:
         return await add_service.advance_fallback(
@@ -116,6 +128,7 @@ async def advance_fallback(req: AdvanceFallbackRequest, reg: Registry = Depends(
             from_series_id=req.fromSeriesId,
             chain_key=req.chainKey,
             next_index=req.nextIndex,
+            min_seeders=await _min_seeders(db),
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -139,10 +152,15 @@ async def spill_season(req: SpillSeasonRequest, reg: Registry = Depends(get_regi
 
 
 @router.get("/availability")
-async def availability(instanceId: str, seriesId: int, reg: Registry = Depends(get_registry)):
+async def availability(
+    instanceId: str, seriesId: int,
+    reg: Registry = Depends(get_registry), db=Depends(get_db),
+):
     """Check release availability for an already-added series on an instance."""
     try:
-        return await check_availability(reg, instanceId, seriesId)
+        return await check_availability(
+            reg, instanceId, seriesId, min_seeders=await _min_seeders(db)
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -158,9 +176,11 @@ async def smart_add_stream(
     title: str = "",
     reg: Registry = Depends(get_registry),
     ops: OperationStore = Depends(get_operations),
+    db=Depends(get_db),
 ):
     """Live (SSE) smart-add: streams each step, ends with the normal result dict."""
     op_id = await ops.start(kind="smart-add", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+    min_seeders = await _min_seeders(db)
 
     async def factory(emit):
         return await add_service.smart_add(
@@ -174,6 +194,7 @@ async def smart_add_stream(
                 "monitored_seasons": monitoredSeasons,
             },
             emit=emit,
+            min_seeders=min_seeders,
         )
 
     return StreamingResponse(
@@ -191,9 +212,11 @@ async def advance_fallback_stream(
     title: str = "",
     reg: Registry = Depends(get_registry),
     ops: OperationStore = Depends(get_operations),
+    db=Depends(get_db),
 ):
     """Live (SSE) fallback step: streams move/swap/search, ends with the result dict."""
     op_id = await ops.start(kind="advance", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+    min_seeders = await _min_seeders(db)
 
     async def factory(emit):
         return await add_service.advance_fallback(
@@ -204,6 +227,7 @@ async def advance_fallback_stream(
             chain_key=chainKey,
             next_index=nextIndex,
             emit=emit,
+            min_seeders=min_seeders,
         )
 
     return StreamingResponse(
@@ -221,9 +245,11 @@ async def reattempt_stream(
     title: str = "",
     reg: Registry = Depends(get_registry),
     ops: OperationStore = Depends(get_operations),
+    db=Depends(get_db),
 ):
     """Live (SSE) re-attempt: re-search in place; ends placed / fallback_suggested / exhausted."""
     op_id = await ops.start(kind="reattempt", title=title or f"tvdb:{tvdbId}", tvdb_id=tvdbId, started_at=_now())
+    min_seeders = await _min_seeders(db)
 
     async def factory(emit):
         return await add_service.reattempt_search(
@@ -234,6 +260,7 @@ async def reattempt_stream(
             chain_key=chainKey,
             next_index=nextIndex,
             emit=emit,
+            min_seeders=min_seeders,
         )
 
     return StreamingResponse(

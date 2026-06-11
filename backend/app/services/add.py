@@ -326,6 +326,7 @@ async def smart_add(
     wait_attempts: int = 10,
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
+    min_seeders: int = 0,
 ) -> dict:
     """Add to the target tier, then verify a release actually exists there.
 
@@ -365,7 +366,9 @@ async def smart_add(
     await emit({"phase": "refresh", "status": "done", "message": f"{len(episodes)} episodes loaded"})
 
     await emit({"phase": "search", "status": "running", "message": f"Searching {target.name} for releases…"})
-    availability = await check_availability(registry, target_id, series["id"])
+    availability = await check_availability(
+        registry, target_id, series["id"], min_seeders=min_seeders
+    )
     await emit({
         "phase": "search", "status": "done",
         "message": _search_message(availability), "data": {"availability": availability},
@@ -408,6 +411,7 @@ async def advance_fallback(
     wait_attempts: int = 10,
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
+    min_seeders: int = 0,
 ) -> dict:
     """Execute one chain step, then report placed / next-suggestion / exhausted.
 
@@ -458,7 +462,9 @@ async def advance_fallback(
 
     await emit({"phase": "search", "status": "running",
                 "message": f"Searching {target_name} for releases…"})
-    availability = await check_availability(registry, new_instance_id, new_series_id)
+    availability = await check_availability(
+        registry, new_instance_id, new_series_id, min_seeders=min_seeders
+    )
     await emit({"phase": "search", "status": "done",
                 "message": _search_message(availability), "data": {"availability": availability}})
 
@@ -518,6 +524,7 @@ async def reattempt_search(
     wait_attempts: int = 10,
     wait_delay: float = 1.5,
     emit: Callable[[dict], Awaitable] | None = None,
+    min_seeders: int = 0,
 ) -> dict:
     """Re-run the interactive search in place; grab if a release now qualifies.
 
@@ -532,7 +539,9 @@ async def reattempt_search(
 
     await emit({"phase": "search", "status": "running",
                 "message": f"Re-searching {inst.name} for releases…"})
-    availability = await check_availability(registry, instance_id, series_id)
+    availability = await check_availability(
+        registry, instance_id, series_id, min_seeders=min_seeders
+    )
     await emit({"phase": "search", "status": "done",
                 "message": _search_message(availability), "data": {"availability": availability}})
 

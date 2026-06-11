@@ -131,3 +131,39 @@ async def test_add_to_instance_no_season_filter_does_not_wait_or_monitor():
 
     await add_to_instance(reg, "1080p", tvdb_id=81189, quality_profile_id=1, root_folder_path="/tv")
     assert not monitor.called
+
+
+# --- /api/availability honors the stored minSeeders default ------------------
+
+@respx.mock
+def test_availability_endpoint_honors_stored_min_seeders(tmp_path):
+    from starlette.testclient import TestClient
+
+    from app.db import Database
+    from app.main import app
+    from app.state import get_db, get_registry
+
+    reg = make_registry()
+    db = Database(str(tmp_path / "relay.db"))
+    app.dependency_overrides[get_registry] = lambda: reg
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        c = TestClient(app)
+        assert c.put("/api/settings/defaults", json={"minSeeders": 3}).status_code == 200
+
+        respx.get(f"{B}/api/v3/episode").mock(
+            return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+        )
+        respx.get(f"{B}/api/v3/release").mock(
+            return_value=httpx.Response(
+                200, json=[{"rejected": False, "protocol": "torrent", "seeders": 1}]
+            )
+        )
+
+        r = c.get("/api/availability", params={"instanceId": "4k", "seriesId": 42})
+        assert r.status_code == 200
+        assert r.json()["available"] is False
+        assert r.json()["seederFiltered"] == 1
+    finally:
+        app.dependency_overrides.pop(get_registry, None)
+        app.dependency_overrides.pop(get_db, None)

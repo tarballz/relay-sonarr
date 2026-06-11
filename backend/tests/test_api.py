@@ -30,7 +30,9 @@ def make_registry():
 
 
 def client():
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
+    app.dependency_overrides[get_db] = lambda: db
     return TestClient(app)
 
 
@@ -188,8 +190,10 @@ def test_smart_add_stream_monitored_seasons(tmp_path):
     import json as _json
 
     store = make_store(tmp_path)
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
     app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)
 
     respx.get(f"{B}/api/v3/series/lookup").mock(
@@ -241,8 +245,10 @@ def test_remove_series_unknown_instance_404():
 @respx.mock
 def test_smart_add_stream_emits_sse_and_records_operation(tmp_path):
     store = make_store(tmp_path)
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
     app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)
 
     # 4K target with a qualifying release → streams steps then a result.
@@ -284,8 +290,10 @@ def test_smart_add_stream_emits_sse_and_records_operation(tmp_path):
 @respx.mock
 def test_reattempt_stream_emits_sse_and_records_operation(tmp_path):
     store = make_store(tmp_path)
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
     app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)
 
     respx.get(f"{B}/api/v3/episode").mock(
@@ -311,8 +319,10 @@ def test_reattempt_stream_emits_sse_and_records_operation(tmp_path):
 @respx.mock
 def test_fill_gaps_stream_records_split_operation(tmp_path):
     store = make_store(tmp_path)
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
     app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)
 
     respx.get(f"{A}/api/v3/qualityprofile").mock(
@@ -379,8 +389,10 @@ def _mock_spill_season():
 @respx.mock
 def test_spill_season_stream_records_operation(tmp_path):
     store = make_store(tmp_path)
+    db = Database(":memory:")
     app.dependency_overrides[get_registry] = make_registry
     app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)
     _mock_spill_season()
 
