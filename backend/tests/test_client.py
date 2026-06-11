@@ -231,3 +231,16 @@ async def test_command_posts_name(client):
     assert body["name"] == "RefreshSeries"
     assert body["seriesId"] == 42
     assert result["id"] == 99
+
+
+@respx.mock
+async def test_grab_release_posts_guid_and_indexer(client):
+    route = respx.post(f"{BASE}/api/v3/release").mock(
+        return_value=httpx.Response(200, json={"guid": "abc", "indexerId": 5})
+    )
+    result = await client.grab_release("abc", 5)
+    import json as _json
+
+    body = _json.loads(route.calls.last.request.content)
+    assert body == {"guid": "abc", "indexerId": 5}
+    assert result["guid"] == "abc"

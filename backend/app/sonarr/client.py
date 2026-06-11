@@ -135,6 +135,10 @@ class SonarrClient:
         """Interactive release search for an episode (GET /release?episodeId=)."""
         return await self._get("/release", {"episodeId": episode_id})
 
+    async def grab_release(self, guid: str, indexer_id: int) -> dict:
+        """Grab one specific release from an interactive search (POST /release)."""
+        return await self._post("/release", {"guid": guid, "indexerId": indexer_id})
+
     async def set_episode_monitor(self, episode_ids: list[int], monitored: bool):
         """Toggle monitoring for a set of episodes (PUT /episode/monitor).
 
