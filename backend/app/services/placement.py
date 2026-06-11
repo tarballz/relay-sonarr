@@ -18,12 +18,18 @@ import json
 from datetime import datetime, timezone
 
 from app.episodes import episode_key, find_series_by_tvdb, is_gap
-from app.services.availability import count_qualifying, summarize_rejections
+from app.services.availability import (
+    DEFAULT_MIN_SEEDERS,
+    count_qualifying,
+    seeder_filtered_count,
+    summarize_rejections,
+)
 from app.services.fanout import gather_instances
 from app.services.status import derive_status
 from app.sonarr.registry import Registry
 from app.store import availability as avail_cache
 from app.store import placements as place_store
+from app.store import settings as settings_store
 
 DEFAULT_TTL = 6 * 3600  # seconds
 
@@ -86,6 +92,8 @@ async def refresh_availability(
     """
     now = _now(now)
     client = registry.get(instance_id).client
+    defaults = await settings_store.get_defaults(db)
+    min_seeders = int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS))
     if episodes is None:
         episodes = await _episodes_for_tvdb(client, tvdb_id) or []
     gaps = [e for e in episodes if is_gap(e)]
@@ -98,7 +106,13 @@ async def refresh_availability(
     async def check(ep: dict):
         season, epnum = episode_key(ep)
         cached = await avail_cache.get_cached(db, instance_id, tvdb_id, season, epnum)
-        if cached is not None and avail_cache.is_fresh(cached["checked_at"], now, ttl):
+        # A verdict computed under a different seeder threshold is stale even
+        # within TTL — flipping the knob takes effect on the next sweep.
+        if (
+            cached is not None
+            and avail_cache.is_fresh(cached["checked_at"], now, ttl)
+            and cached["min_seeders"] == min_seeders
+        ):
             results.append({
                 "season": season, "episode": epnum,
                 "qualifies": bool(cached["qualifies"]),
@@ -110,12 +124,16 @@ async def refresh_availability(
             return
         async with sem:
             releases = await client.releases(ep["id"])
-        qc = count_qualifying(releases)
+        qc = count_qualifying(releases, min_seeders)
         rej = summarize_rejections(releases)
+        filtered = seeder_filtered_count(releases, min_seeders)
+        if filtered > 0:
+            rej.append({"reason": f"fewer than {min_seeders} seeders", "count": filtered})
         await avail_cache.put(
             db, instance_id=instance_id, tvdb_id=tvdb_id, season=season, episode=epnum,
             qualifies=qc > 0, total_releases=len(releases), qualifying_count=qc,
             rejection_json=json.dumps(rej), checked_at=now.isoformat(),
+            min_seeders=min_seeders,
         )
         results.append({
             "season": season, "episode": epnum, "qualifies": qc > 0,

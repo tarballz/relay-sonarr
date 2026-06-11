@@ -10,7 +10,9 @@ from app.main import app
 from app.services import placement
 from app.services.placement import _infer_desired, tier_priority
 from app.state import get_db, get_registry
+from app.store import availability as avail_cache
 from app.store import placements as place_store
+from app.store import settings as settings_store
 from tests.test_chain import A, B, make_registry
 
 TVDB = 99
@@ -122,6 +124,45 @@ async def test_refresh_uses_cache_within_ttl(tmp_path):
     await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
     # Only one gap episode (S1E2); the second sweep is served from cache.
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_refresh_availability_min_seeders_gate(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    # The gap's only release is a non-rejected but 1-seeder torrent.
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 1},
+    ]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 3})
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["qualifies"] is False
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    assert cached["qualifies"] == 0
+    assert cached["min_seeders"] == 3
+
+
+@respx.mock
+async def test_refresh_availability_recheck_when_min_seeders_changes(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 1},
+    ]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    r1 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+    assert r1[0]["qualifies"] is True
+
+    # Flipping the knob must invalidate the cached verdict (no waiting out the TTL).
+    await settings_store.set_defaults(db, {"minSeeders": 3})
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 2
+    assert r2[0]["qualifies"] is False
 
 
 @respx.mock

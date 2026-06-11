@@ -125,6 +125,9 @@ class Database:
     def _migrate(self) -> None:
         # Columns added after the initial schema shipped — safe on fresh + existing DBs.
         self._ensure_column("placement", "wanted_since", "TEXT")
+        # The seeder threshold a verdict was computed under; a mismatch with the
+        # current minSeeders setting invalidates the row (NULL = legacy row).
+        self._ensure_column("availability_cache", "min_seeders", "INTEGER")
 
     def close(self) -> None:
         with self._lock:

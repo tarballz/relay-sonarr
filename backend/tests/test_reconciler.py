@@ -10,6 +10,7 @@ from app.policy import SeriesPolicy
 from app.reconciler import Reconciler
 from app.store import intents as intent_store
 from app.store import placements as place_store
+from app.store import settings as settings_store
 from app.store.operations import OperationStore
 from tests.test_chain import A, B, _nosleep, make_registry, mock_1080p_profiles
 
@@ -90,6 +91,53 @@ async def test_reconcile_searches_desired_and_fills_fallback(tmp_path):
     # A reconciler operation was recorded.
     op = (await ops.recent())[0]
     assert op["source"] == "reconciler" and op["kind"] == "reconcile"
+
+
+@respx.mock
+async def test_reconcile_min_seeders_spills_weak_episode(tmp_path):
+    reg, db, ops, rec = _make(tmp_path)
+    # Same shape as _mock_4k, but S1E3's only 4K release is a 1-seeder torrent —
+    # with minSeeders=3 it must spill to 1080p alongside S1E2 instead of being
+    # searched on the desired tier.
+    respx.get(f"{B}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "Mad Men"}])
+    )
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 1001, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True},
+        {"id": 1002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False},
+        {"id": 1003, "seasonNumber": 1, "episodeNumber": 3, "monitored": True, "hasFile": False},
+    ]))
+    respx.get(f"{B}/api/v3/release", params={"episodeId": "1002"}).mock(
+        return_value=httpx.Response(200, json=[{"rejected": True, "rejections": ["not wanted in profile"]}])
+    )
+    respx.get(f"{B}/api/v3/release", params={"episodeId": "1003"}).mock(
+        return_value=httpx.Response(
+            200, json=[{"rejected": False, "protocol": "torrent", "seeders": 1}]
+        )
+    )
+    b_cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    mock_1080p_profiles()
+    respx.get(f"{A}/api/v3/series").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{A}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": TVDB, "title": "Mad Men"}])
+    )
+    respx.post(f"{A}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 20}))
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 2}))
+    respx.get(f"{A}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 2002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False},
+        {"id": 2003, "seasonNumber": 1, "episodeNumber": 3, "monitored": True, "hasFile": False},
+    ]))
+    respx.put(f"{A}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+
+    await settings_store.set_defaults(db, {"minSeeders": 3})
+    result = await rec.reconcile_series({"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men"})
+
+    assert result["searchedOnDesired"] == 0
+    assert result["filled"] == 2
+    # No EpisodeSearch fired on the 4K tier — its only candidate was too weak.
+    b_cmds = [json.loads(c.request.content) for c in b_cmd.calls]
+    assert not any(c.get("name") == "EpisodeSearch" for c in b_cmds)
 
 
 @respx.mock
