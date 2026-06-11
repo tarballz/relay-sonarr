@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.services.availability import looks_dangerous
 from app.services.fanout import gather_instances
 
 logger = logging.getLogger(__name__)
@@ -145,11 +146,17 @@ async def poll_all(registry: Registry, db, *, now: datetime | None = None, **kw)
     return {"instances": out, "transitionCount": total}
 
 
+# "queued" included: the client may report a torrent it never started as queued,
+# and at 0% past the threshold that's just as dead as a stalled "downloading" one.
+# "paused" is deliberately excluded — that's a user decision.
+_STALLABLE_STATUSES = {"downloading", "queued", "stalled", "warning"}
+
+
 def _is_stalled(record: dict, *, now: datetime, stalled_days: float) -> bool:
     """A torrent downloading at literal 0% (no bytes) since longer than the threshold."""
     if record.get("protocol") != "torrent":
         return False
-    if (record.get("status") or "").lower() != "downloading":
+    if (record.get("status") or "").lower() not in _STALLABLE_STATUSES:
         return False
     size = record.get("size") or 0
     if size <= 0 or record.get("sizeleft") != size:  # sizeleft==size means 0% downloaded
@@ -211,4 +218,66 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
         logger.warning("stalled sweep hit per-tick cap (%d); %d deferred to next tick", cap, skipped)
     if removed:
         logger.info("stalled sweep removed %d torrent(s)", removed)
+    return removed
+
+
+# Sonarr's own import-caution markers (set when a downloaded file is an
+# executable). Complements the title-extension check in `looks_dangerous`.
+_DANGER_MARKERS = ("potentially dangerous file", "found executable file")
+
+
+def _is_dangerous(record: dict) -> bool:
+    """Queue item whose release is an executable/malware fake.
+
+    Two signals: the release title itself ends in an executable extension
+    (``looks_dangerous``), or Sonarr's import pipeline flagged a contained file
+    ("Caution: Found potentially dangerous file…" / "Found executable file…").
+    """
+    if looks_dangerous(record):
+        return True
+    for sm in record.get("statusMessages") or []:
+        text = " ".join([sm.get("title") or ""] + list(sm.get("messages") or [])).lower()
+        if any(marker in text for marker in _DANGER_MARKERS):
+            return True
+    return False
+
+
+async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
+    """Remove + blocklist executable/malware fake releases, then re-search.
+
+    Unlike the stalled sweep there is no age threshold — a flagged executable
+    should never sit in the queue (or on disk) at all. The delete removes the
+    payload from the download client; the EpisodeSearch immediately re-acquires
+    a legitimate release (the fake is blocklisted, so it can't come back).
+    """
+    removed = 0
+    for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
+        if isinstance(res, Exception):
+            continue
+        for r in res.get("records", []):
+            if not _is_dangerous(r) or removed >= cap:
+                continue
+            title = _stalled_title(r)
+            op_id = await ops.start(
+                kind="dangerous-cleanup", title=title, tvdb_id=r.get("seriesId") or 0,
+                started_at=now.isoformat(), source="reconciler",
+            )
+            try:
+                await inst.client.delete_queue_item(r["id"])
+                ep_id = (r.get("episode") or {}).get("id")
+                if ep_id:
+                    await inst.client.command("EpisodeSearch", episodeIds=[ep_id])
+                await ops.add_step(op_id, {
+                    "phase": "remove", "status": "done",
+                    "message": f"Removed dangerous release — {title} "
+                               f"(executable payload; blocklisted, re-searching)",
+                })
+                await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
+                                 finished_at=now.isoformat())
+                removed += 1
+            except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
+                await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
+                logger.warning("failed to remove dangerous release %s: %s", r.get("id"), exc)
+    if removed:
+        logger.info("dangerous sweep removed %d release(s)", removed)
     return removed

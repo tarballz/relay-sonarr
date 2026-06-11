@@ -412,5 +412,55 @@ async def test_tick_skips_stalled_sweep_when_disabled(tmp_path, monkeypatch):
     assert called["ran"] is False
 
 
+async def test_tick_runs_dangerous_sweep_when_enabled(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make(tmp_path)
+    rec.dangerous_cleanup = True
+    called = {"ran": False}
+
+    async def fake_poll_all(*a, **k):
+        return {"polled": []}
+
+    async def fake_stalled(*a, **k):
+        return 0
+
+    async def fake_dangerous(registry, db_, ops_, *, cap, now):
+        called["ran"] = True
+        called["cap"] = cap
+        return 0
+
+    monkeypatch.setattr("app.reconciler.poller.poll_all", fake_poll_all)
+    monkeypatch.setattr("app.reconciler.poller.sweep_stalled", fake_stalled)
+    monkeypatch.setattr("app.reconciler.poller.sweep_dangerous", fake_dangerous)
+    monkeypatch.setattr(rec, "_ensure_intents", lambda: _anoop())
+
+    await rec.tick()
+    assert called["ran"] is True
+    assert called["cap"] == rec._stalled_cap
+
+
+async def test_tick_skips_dangerous_sweep_when_disabled(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make(tmp_path)
+    rec.dangerous_cleanup = False
+    called = {"ran": False}
+
+    async def fake_poll_all(*a, **k):
+        return {"polled": []}
+
+    async def fake_stalled(*a, **k):
+        return 0
+
+    async def fake_dangerous(*a, **k):
+        called["ran"] = True
+        return 0
+
+    monkeypatch.setattr("app.reconciler.poller.poll_all", fake_poll_all)
+    monkeypatch.setattr("app.reconciler.poller.sweep_stalled", fake_stalled)
+    monkeypatch.setattr("app.reconciler.poller.sweep_dangerous", fake_dangerous)
+    monkeypatch.setattr(rec, "_ensure_intents", lambda: _anoop())
+
+    await rec.tick()
+    assert called["ran"] is False
+
+
 async def _anoop():
     return None

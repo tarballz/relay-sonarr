@@ -52,6 +52,28 @@ async def test_sweep_removes_only_old_zero_percent_torrents(tmp_path):
 
 
 @respx.mock
+async def test_sweep_catches_queued_zero_percent(tmp_path):
+    # Sonarr reports torrents the client hasn't started as status "queued" —
+    # at 0% for days they're just as dead as "downloading" ones (seen live:
+    # a 4K season pack sat queued/0% for 6 days, invisible to the old sweep).
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    records = [
+        _rec(id=21, status="queued", added=(NOW - timedelta(days=6)).isoformat()),   # REMOVE
+        _rec(id=22, status="paused", added=(NOW - timedelta(days=6)).isoformat()),   # user-paused: leave
+    ]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/21").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW)
+
+    assert removed == 1
+    assert del_route.called
+
+
+@respx.mock
 async def test_sweep_respects_per_tick_cap(tmp_path):
     db = Database(str(tmp_path / "relay.db"))
     ops = OperationStore(db)

@@ -40,7 +40,8 @@ class Reconciler:
                  jitter: float = 120, availability_ttl: float = placement.DEFAULT_TTL,
                  clock=None, sleep=asyncio.sleep, wait_attempts: int = 10,
                  wait_delay: float = 1.5, enabled: bool = True,
-                 stalled_cleanup: bool = True, stalled_cap: int = 25):
+                 stalled_cleanup: bool = True, stalled_cap: int = 25,
+                 dangerous_cleanup: bool = True):
         self.registry = registry
         self.db = db
         self.ops = operations
@@ -57,6 +58,7 @@ class Reconciler:
         self.enabled = enabled
         self.stalled_cleanup = stalled_cleanup
         self._stalled_cap = stalled_cap
+        self.dangerous_cleanup = dangerous_cleanup
         self._started_at = self.now()
         self._last_tick_started_at: datetime | None = None
         self._last_tick_finished_at: datetime | None = None
@@ -159,6 +161,14 @@ class Reconciler:
                 )
             except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
                 logger.exception("stalled sweep failed")
+        if self.dangerous_cleanup:
+            try:
+                await poller.sweep_dangerous(
+                    self.registry, self.db, self.ops,
+                    cap=self._stalled_cap, now=self.now(),
+                )
+            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
+                logger.exception("dangerous sweep failed")
         await self._ensure_intents()
         results = []
         for intent in await intent_store.all_active(self.db):
