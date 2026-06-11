@@ -5,6 +5,7 @@ from app.config import Config, InstanceConfig
 from app.services.availability import (
     check_availability,
     count_qualifying,
+    seeder_filtered_count,
     summarize_rejections,
 )
 from app.sonarr.registry import Registry
@@ -58,6 +59,46 @@ def test_summarize_rejections_quality_and_other():
     by_reason = {r["reason"]: r["count"] for r in summarize_rejections(releases)}
     assert by_reason["quality not allowed"] == 1
     assert by_reason["Some bespoke reason"] == 1
+
+
+# --- minSeeders gate (pure logic) --------------------------------------------
+
+def test_count_qualifying_min_seeders_filters_weak_torrents():
+    releases = [
+        {"guid": "a", "rejected": False, "protocol": "torrent", "seeders": 1},
+        {"guid": "b", "rejected": False, "protocol": "torrent", "seeders": 5},
+    ]
+    assert count_qualifying(releases, min_seeders=3) == 1
+
+
+def test_count_qualifying_usenet_always_qualifies():
+    releases = [{"guid": "n", "rejected": False, "protocol": "usenet"}]
+    assert count_qualifying(releases, min_seeders=3) == 1
+
+
+def test_count_qualifying_torrent_null_seeders_treated_as_zero():
+    releases = [{"guid": "t", "rejected": False, "protocol": "torrent", "seeders": None}]
+    assert count_qualifying(releases, min_seeders=1) == 0
+
+
+def test_count_qualifying_min_seeders_zero_disables_gate():
+    releases = [{"guid": "t", "rejected": False, "protocol": "torrent", "seeders": 0}]
+    assert count_qualifying(releases, min_seeders=0) == 1
+
+
+def test_count_qualifying_missing_protocol_not_gated():
+    releases = [{"guid": "x", "rejected": False}]
+    assert count_qualifying(releases, min_seeders=3) == 1
+
+
+def test_seeder_filtered_count_counts_only_gate_exclusions():
+    releases = [
+        {"rejected": False, "protocol": "torrent", "seeders": 1},   # gated
+        {"rejected": True, "protocol": "torrent", "seeders": 1},    # rejected, not the gate
+        {"rejected": False, "protocol": "torrent", "seeders": 9},   # passes
+        {"rejected": False, "protocol": "usenet"},                  # never gated
+    ]
+    assert seeder_filtered_count(releases, min_seeders=3) == 1
 
 
 # --- orchestration -----------------------------------------------------------
@@ -138,3 +179,47 @@ async def test_check_availability_no_episodes_is_unavailable():
 
     assert result["available"] is False
     assert result["sampledEpisode"] is None
+
+
+@respx.mock
+async def test_check_availability_min_seeders_makes_weak_tier_unavailable():
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 7, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"rejected": False, "protocol": "torrent", "seeders": 1},
+                {"rejected": False, "protocol": "torrent", "seeders": 1},
+            ],
+        )
+    )
+
+    result = await check_availability(reg, "4k", series_id=42, min_seeders=3)
+
+    assert result["available"] is False
+    assert result["releaseCount"] == 0
+    assert result["totalReleases"] == 2
+    assert result["seederFiltered"] == 2
+    assert {"reason": "fewer than 3 seeders", "count": 2} in result["rejectionSummary"]
+
+
+@respx.mock
+async def test_check_availability_default_min_seeders_zero_unchanged():
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 7, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(
+            200, json=[{"rejected": False, "protocol": "torrent", "seeders": 0}]
+        )
+    )
+
+    result = await check_availability(reg, "4k", series_id=42)
+
+    assert result["available"] is True
+    assert result["seederFiltered"] == 0
+    assert result["rejectionSummary"] == []

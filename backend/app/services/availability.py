@@ -11,9 +11,34 @@ from __future__ import annotations
 from app.sonarr.registry import Registry
 
 
-def count_qualifying(releases: list[dict]) -> int:
-    """Number of releases that satisfy the profile (i.e. not rejected)."""
-    return sum(1 for r in releases if not r.get("rejected", False))
+# Default seeder threshold for the gate; 0 disables it (legacy behavior).
+DEFAULT_MIN_SEEDERS = 3
+
+
+def _meets_seeders(release: dict, min_seeders: int) -> bool:
+    """The gate only applies to torrents — usenet has no seeders and always
+    passes, as do protocol-less releases (older Sonarr payloads, test mocks)."""
+    if min_seeders <= 0 or release.get("protocol") != "torrent":
+        return True
+    return (release.get("seeders") or 0) >= min_seeders
+
+
+def count_qualifying(releases: list[dict], min_seeders: int = 0) -> int:
+    """Number of releases that satisfy the profile (i.e. not rejected) and,
+    for torrents, have at least ``min_seeders`` seeders."""
+    return sum(
+        1 for r in releases
+        if not r.get("rejected", False) and _meets_seeders(r, min_seeders)
+    )
+
+
+def seeder_filtered_count(releases: list[dict], min_seeders: int) -> int:
+    """Non-rejected releases excluded *purely* by the seeder gate — i.e. they
+    would have qualified at min_seeders=0. Used to explain the gate in the UI."""
+    return sum(
+        1 for r in releases
+        if not r.get("rejected", False) and not _meets_seeders(r, min_seeders)
+    )
 
 
 def _bucket(reasons: list[str]) -> str:
@@ -69,7 +94,9 @@ def _pick_sample_episode(episodes: list[dict]) -> dict | None:
     return episodes[0]
 
 
-async def check_availability(registry: Registry, instance_id: str, series_id: int) -> dict:
+async def check_availability(
+    registry: Registry, instance_id: str, series_id: int, *, min_seeders: int = 0
+) -> dict:
     """Run an interactive release search on a sample episode of the series.
 
     Assumes the series already exists on the instance and its episodes have been
@@ -84,17 +111,27 @@ async def check_availability(registry: Registry, instance_id: str, series_id: in
             "available": False,
             "releaseCount": 0,
             "totalReleases": 0,
+            "seederFiltered": 0,
             "rejectionSummary": [],
             "sampledEpisode": None,
         }
 
     releases = await client.releases(sample["id"])
-    qualifying = count_qualifying(releases)
+    qualifying = count_qualifying(releases, min_seeders)
+    filtered = seeder_filtered_count(releases, min_seeders)
+    rejections = summarize_rejections(releases)
+    if filtered > 0:
+        # These releases aren't Sonarr-rejected, so summarize_rejections can't
+        # see them — append our gate's exclusions so the UI can explain them.
+        rejections.append(
+            {"reason": f"fewer than {min_seeders} seeders", "count": filtered}
+        )
     return {
         "instanceId": instance_id,
         "available": qualifying > 0,
         "releaseCount": qualifying,
         "totalReleases": len(releases),
-        "rejectionSummary": summarize_rejections(releases),
+        "seederFiltered": filtered,
+        "rejectionSummary": rejections,
         "sampledEpisode": {"id": sample["id"], "title": sample.get("title")},
     }
