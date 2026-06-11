@@ -25,6 +25,7 @@ from app.services.availability import (
     summarize_rejections,
 )
 from app.services.fanout import gather_instances
+from app.services.grab import pick_best_torrent
 from app.services.status import derive_status
 from app.sonarr.registry import Registry
 from app.store import availability as avail_cache
@@ -129,11 +130,17 @@ async def refresh_availability(
         filtered = seeder_filtered_count(releases, min_seeders)
         if filtered > 0:
             rej.append({"reason": f"fewer than {min_seeders} seeders", "count": filtered})
+        # Capture the best grab candidate now so the reconciler can grab it
+        # later without a second indexer search. Trimmed to keep rows small.
+        best = pick_best_torrent(releases, min_seeders)
+        if best is not None:
+            best = {k: best.get(k) for k in ("guid", "indexerId", "seeders", "title")}
         await avail_cache.put(
             db, instance_id=instance_id, tvdb_id=tvdb_id, season=season, episode=epnum,
             qualifies=qc > 0, total_releases=len(releases), qualifying_count=qc,
             rejection_json=json.dumps(rej), checked_at=now.isoformat(),
             min_seeders=min_seeders,
+            best_release_json=json.dumps(best) if best else None,
         )
         results.append({
             "season": season, "episode": epnum, "qualifies": qc > 0,

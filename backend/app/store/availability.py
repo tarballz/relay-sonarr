@@ -29,14 +29,16 @@ async def get_for_series(db: Database, tvdb_id: int) -> list:
 async def put(db: Database, *, instance_id: str, tvdb_id: int, season: int,
               episode: int, qualifies: bool, total_releases: int,
               qualifying_count: int, rejection_json: str, checked_at: str,
-              min_seeders: int = 0) -> None:
+              min_seeders: int = 0, best_release_json: str | None = None) -> None:
     await db.execute(
         "INSERT OR REPLACE INTO availability_cache"
         "(instance_id, tvdb_id, season, episode, qualifies, total_releases,"
-        " qualifying_count, rejection_json, checked_at, min_seeders) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " qualifying_count, rejection_json, checked_at, min_seeders,"
+        " best_release_json) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (instance_id, tvdb_id, season, episode, 1 if qualifies else 0,
-         total_releases, qualifying_count, rejection_json, checked_at, min_seeders),
+         total_releases, qualifying_count, rejection_json, checked_at, min_seeders,
+         best_release_json),
     )
 
 

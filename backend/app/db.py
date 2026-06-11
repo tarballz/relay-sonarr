@@ -128,6 +128,9 @@ class Database:
         # The seeder threshold a verdict was computed under; a mismatch with the
         # current minSeeders setting invalidates the row (NULL = legacy row).
         self._ensure_column("availability_cache", "min_seeders", "INTEGER")
+        # Best grab candidate {guid, indexerId, seeders, title} captured during
+        # the availability check, so the reconciler can grab without re-searching.
+        self._ensure_column("availability_cache", "best_release_json", "TEXT")
 
     def close(self) -> None:
         with self._lock:

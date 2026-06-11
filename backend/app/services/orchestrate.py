@@ -8,12 +8,17 @@ reuse the same low-level helpers (``add_to_instance``, ``resolve_step``,
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Awaitable, Callable
+
+import httpx
 
 from app.config import FallbackStep
 from app.episodes import episode_key, find_series_by_tvdb
 from app.services.add import _noop_emit, _wait_for_episodes, add_to_instance, resolve_step
 from app.sonarr.registry import Registry
+
+logger = logging.getLogger(__name__)
 
 
 async def _series_and_episodes(client, tvdb_id: int):
@@ -25,20 +30,43 @@ async def _series_and_episodes(client, tvdb_id: int):
 
 async def search_keys_on_tier(
     registry: Registry, instance_id: str, tvdb_id: int, keys: set,
-    *, ensure_monitored: bool = True,
+    *, ensure_monitored: bool = True, candidates: dict[tuple, dict] | None = None,
 ) -> list[int]:
-    """Monitor (optionally) + EpisodeSearch the episodes matching ``keys`` on a
-    tier the series already lives on. Returns the episode ids searched."""
+    """Monitor (optionally) + acquire the episodes matching ``keys`` on a tier
+    the series already lives on. Returns the episode ids acted on.
+
+    ``candidates`` maps ``(season, episode)`` to a cached grab candidate
+    ``{guid, indexerId, ...}`` (captured by ``refresh_availability``). Episodes
+    with a candidate are grabbed directly — no indexer search; the rest (and any
+    failed grabs, e.g. a guid that went stale within the cache TTL) land in one
+    batched EpisodeSearch, so an episode is never left without an action.
+    """
     client = registry.get(instance_id).client
     series_id, episodes = await _series_and_episodes(client, tvdb_id)
     if series_id is None:
         return []
-    ids = [e["id"] for e in episodes if episode_key(e) in keys]
+    matched = [e for e in episodes if episode_key(e) in keys]
+    ids = [e["id"] for e in matched]
     if not ids:
         return []
     if ensure_monitored:
         await client.set_episode_monitor(ids, True)
-    await client.command("EpisodeSearch", episodeIds=ids)
+
+    to_search: list[int] = []
+    for ep in matched:
+        cand = (candidates or {}).get(episode_key(ep))
+        if cand:
+            try:
+                await client.grab_release(cand["guid"], cand["indexerId"])
+                continue
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "cached grab of %r failed (%s); falling back to EpisodeSearch",
+                    cand.get("title"), exc,
+                )
+        to_search.append(ep["id"])
+    if to_search:
+        await client.command("EpisodeSearch", episodeIds=to_search)
     return ids
 
 
@@ -50,7 +78,11 @@ async def place_on_fallback(
 ) -> list[int]:
     """Split specific episodes onto a fallback tier: ensure the series exists
     there, monitor+search exactly ``keys``, then unmonitor them on the origin so
-    the two tiers hold a disjoint set. Returns the fallback episode ids searched."""
+    the two tiers hold a disjoint set. Returns the fallback episode ids searched.
+
+    Fallback placement stays a plain EpisodeSearch (no direct grab): it is
+    optimistic — the series may not even exist on this tier yet, so no
+    availability check ran here and there is no cached candidate to grab."""
     resolved = await resolve_step(
         registry, FallbackStep(instanceId=fb_instance_id, profile=profile, root_folder=root)
     )

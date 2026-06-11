@@ -12,6 +12,7 @@ public single-shot entrypoint — the real ``run()`` loop is never used in tests
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from datetime import datetime, timezone
 from app.policy import effective_policy
 from app.services import orchestrate, placement, poller
 from app.services.library import combined_series
+from app.store import availability as avail_cache
 from app.store import intents as intent_store
 from app.store import placements as place_store
 from app.store import settings as settings_store
@@ -248,13 +250,29 @@ class Reconciler:
         )
         try:
             if search_desired:
+                # Grab candidates captured during the availability check —
+                # direct grabs cost no extra indexer searches.
+                candidates: dict[tuple, dict] = {}
+                if defaults.get("seederGrab", True):
+                    candidates = {
+                        (r["season"], r["episode"]): json.loads(r["best_release_json"])
+                        for r in await avail_cache.get_for_series(self.db, tvdb)
+                        if r["instance_id"] == desired and r["best_release_json"]
+                    }
                 ids = await orchestrate.search_keys_on_tier(
-                    self.registry, desired, tvdb, set(search_desired)
+                    self.registry, desired, tvdb, set(search_desired),
+                    candidates=candidates,
                 )
                 await self._mark_searching(tvdb, search_desired, now)
+                grabbed = sum(1 for k in search_desired if k in candidates)
                 await self.ops.add_step(op_id, {
                     "phase": "search", "status": "done",
-                    "message": f"Searched {len(ids)} episode(s) on {desired}",
+                    "message": (
+                        f"Grabbed {grabbed} directly, searched "
+                        f"{len(ids) - grabbed} episode(s) on {desired}"
+                        if grabbed else
+                        f"Searched {len(ids)} episode(s) on {desired}"
+                    ),
                 })
             filled = 0
             filled_on = None

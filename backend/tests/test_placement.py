@@ -166,6 +166,44 @@ async def test_refresh_availability_recheck_when_min_seeders_changes(tmp_path):
 
 
 @respx.mock
+async def test_refresh_availability_caches_best_release(tmp_path):
+    import json as _json
+
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"guid": "lo", "indexerId": 1, "title": "lo-rel", "rejected": False,
+         "protocol": "torrent", "seeders": 4},
+        {"guid": "hi", "indexerId": 2, "title": "hi-rel", "rejected": False,
+         "protocol": "torrent", "seeders": 44},
+    ]))
+    db = _db(tmp_path)
+
+    await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    best = _json.loads(cached["best_release_json"])
+    assert best["guid"] == "hi"
+    assert best["indexerId"] == 2
+    assert best["seeders"] == 44
+
+
+@respx.mock
+async def test_refresh_availability_no_torrent_candidate_caches_null(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"guid": "n", "indexerId": 1, "protocol": "usenet", "rejected": False},
+    ]))
+    db = _db(tmp_path)
+
+    await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    assert cached["best_release_json"] is None
+
+
+@respx.mock
 async def test_compute_plan_preserves_in_progress_state(tmp_path):
     reg = make_registry()
     _mock_library()

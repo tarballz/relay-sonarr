@@ -93,6 +93,101 @@ async def test_reconcile_searches_desired_and_fills_fallback(tmp_path):
     assert op["source"] == "reconciler" and op["kind"] == "reconcile"
 
 
+def _mock_4k_with_grabbable_e3(seeders=40):
+    """_mock_4k, but S1E3's release carries grab metadata (guid/indexerId)."""
+    respx.get(f"{B}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "Mad Men"}])
+    )
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 1001, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True},
+        {"id": 1002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False},
+        {"id": 1003, "seasonNumber": 1, "episodeNumber": 3, "monitored": True, "hasFile": False},
+    ]))
+    respx.get(f"{B}/api/v3/release", params={"episodeId": "1002"}).mock(
+        return_value=httpx.Response(200, json=[{"rejected": True, "rejections": ["not wanted in profile"]}])
+    )
+    respx.get(f"{B}/api/v3/release", params={"episodeId": "1003"}).mock(
+        return_value=httpx.Response(200, json=[
+            {"guid": "g-e3", "indexerId": 7, "title": "MadMen.S01E03.2160p",
+             "rejected": False, "protocol": "torrent", "seeders": seeders},
+        ])
+    )
+
+
+def _mock_1080p_fill():
+    mock_1080p_profiles()
+    respx.get(f"{A}/api/v3/series").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{A}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": TVDB, "title": "Mad Men"}])
+    )
+    respx.post(f"{A}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 20}))
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 2}))
+    respx.get(f"{A}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 2002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False},
+    ]))
+    respx.put(f"{A}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+
+
+@respx.mock
+async def test_reconcile_grabs_cached_candidate_instead_of_episode_search(tmp_path):
+    reg, db, ops, rec = _make(tmp_path)
+    _mock_4k_with_grabbable_e3()
+    grab = respx.post(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(201, json={"guid": "g-e3"})
+    )
+    b_cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    _mock_1080p_fill()
+
+    result = await rec.reconcile_series({"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men"})
+
+    assert result["searchedOnDesired"] == 1
+    body = json.loads(grab.calls.last.request.content)
+    assert body == {"guid": "g-e3", "indexerId": 7}
+    # The grabbed episode must NOT also get an EpisodeSearch on the 4K tier.
+    b_cmds = [json.loads(c.request.content) for c in b_cmd.calls]
+    assert not any(c.get("name") == "EpisodeSearch" for c in b_cmds)
+    # Placement still tracks the lifecycle.
+    e3 = await place_store.get(db, TVDB, 1, 3)
+    assert e3["state"] == "searching"
+
+
+@respx.mock
+async def test_reconcile_grab_failure_falls_back_to_episode_search(tmp_path):
+    reg, db, ops, rec = _make(tmp_path)
+    _mock_4k_with_grabbable_e3()
+    respx.post(f"{B}/api/v3/release").mock(return_value=httpx.Response(404))  # stale guid
+    b_cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    _mock_1080p_fill()
+
+    result = await rec.reconcile_series({"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men"})
+
+    assert result["searchedOnDesired"] == 1
+    b_cmds = [json.loads(c.request.content) for c in b_cmd.calls]
+    assert {"name": "EpisodeSearch", "episodeIds": [1003]} in b_cmds
+
+
+@respx.mock
+async def test_reconcile_seeder_grab_disabled_uses_episode_search(tmp_path):
+    reg, db, ops, rec = _make(tmp_path)
+    _mock_4k_with_grabbable_e3()
+    grab = respx.post(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(201, json={})
+    )
+    b_cmd = respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    _mock_1080p_fill()
+
+    await settings_store.set_defaults(db, {"seederGrab": False})
+    result = await rec.reconcile_series({"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men"})
+
+    assert result["searchedOnDesired"] == 1
+    assert not grab.called
+    b_cmds = [json.loads(c.request.content) for c in b_cmd.calls]
+    assert {"name": "EpisodeSearch", "episodeIds": [1003]} in b_cmds
+
+
 @respx.mock
 async def test_reconcile_min_seeders_spills_weak_episode(tmp_path):
     reg, db, ops, rec = _make(tmp_path)
