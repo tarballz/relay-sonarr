@@ -166,6 +166,7 @@ function DefaultsEditor({ onToast, qc }) {
       escalateAfterDays: data.escalateAfterDays ?? 0,
       stalledDays: data.stalledDays ?? 3,
       minSeeders: data.minSeeders ?? 3,
+      seederGrab: data.seederGrab ?? true,
     });
   }, [JSON.stringify(data)]);
 
@@ -195,6 +196,14 @@ function DefaultsEditor({ onToast, qc }) {
             onChange={(e) => setForm((f) => ({ ...f, allowSplit: e.target.checked }))}
           />
           Allow per-episode split across tiers by default
+        </label>
+        <label className="check-row" style={{ marginBottom: 14 }}>
+          <input
+            type="checkbox"
+            checked={form.seederGrab}
+            onChange={(e) => setForm((f) => ({ ...f, seederGrab: e.target.checked }))}
+          />
+          Grab the best-seeded release directly (falls back to a normal search)
         </label>
         <label className="field" style={{ maxWidth: 260 }}>
           Escalate to fallback after (days)
