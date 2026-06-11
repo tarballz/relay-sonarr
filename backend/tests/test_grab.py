@@ -59,6 +59,14 @@ def test_pick_best_null_seeders_treated_as_zero():
     assert pick_best_torrent([_t("a", None)], min_seeders=1) is None
 
 
+def test_pick_best_never_picks_dangerous_title():
+    # Malware fakes routinely advertise high seeder counts — the seeder sort
+    # must never make one the winner.
+    releases = [_t("evil", 999, title="From.S04E06.1080p.WEB.h264-ETH.scr"),
+                _t("good", 5)]
+    assert pick_best_torrent(releases)["guid"] == "good"
+
+
 # --- grab_then_search ----------------------------------------------------------
 
 @respx.mock

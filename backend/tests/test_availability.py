@@ -91,6 +91,15 @@ def test_count_qualifying_missing_protocol_not_gated():
     assert count_qualifying(releases, min_seeders=3) == 1
 
 
+def test_count_qualifying_excludes_dangerous_titles():
+    releases = [
+        {"rejected": False, "title": "From.S04E06.1080p.WEB.h264-ETH.scr"},
+        {"rejected": False, "title": "From.S04E08.1080p.WEB.h264-ETHEL.exe"},
+        {"rejected": False, "title": "From.S04E06.1080p.WEB.h264-NTb"},
+    ]
+    assert count_qualifying(releases) == 1
+
+
 def test_seeder_filtered_count_counts_only_gate_exclusions():
     releases = [
         {"rejected": False, "protocol": "torrent", "seeders": 1},   # gated

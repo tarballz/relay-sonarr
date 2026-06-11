@@ -13,6 +13,8 @@ import logging
 
 import httpx
 
+from app.services.availability import looks_dangerous
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +28,7 @@ def pick_best_torrent(releases: list[dict], min_seeders: int = 0) -> dict | None
     candidates = [
         r for r in releases
         if not r.get("rejected", False)
+        and not looks_dangerous(r)
         and r.get("protocol") == "torrent"
         and (r.get("seeders") or 0) >= max(min_seeders, 1)
     ]

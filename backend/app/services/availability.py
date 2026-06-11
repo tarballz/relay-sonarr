@@ -14,6 +14,18 @@ from app.sonarr.registry import Registry
 # Default seeder threshold for the gate; 0 disables it (legacy behavior).
 DEFAULT_MIN_SEEDERS = 3
 
+# Release titles ending in an executable extension are malware fakes (seen
+# live: "From.S04E06.1080p.WEB.h264-ETH.scr"). Seeder counts don't catch these
+# — attackers fake healthy swarms — but the payload extension does.
+DANGEROUS_EXTENSIONS = (".exe", ".scr", ".bat", ".cmd", ".msi", ".pif",
+                        ".vbs", ".ps1", ".lnk", ".jar")
+
+
+def looks_dangerous(release: dict) -> bool:
+    """True when the release/queue-item title is an executable fake."""
+    title = (release.get("title") or "").strip().lower()
+    return title.endswith(DANGEROUS_EXTENSIONS)
+
 
 def _meets_seeders(release: dict, min_seeders: int) -> bool:
     """The gate only applies to torrents — usenet has no seeders and always
@@ -24,11 +36,13 @@ def _meets_seeders(release: dict, min_seeders: int) -> bool:
 
 
 def count_qualifying(releases: list[dict], min_seeders: int = 0) -> int:
-    """Number of releases that satisfy the profile (i.e. not rejected) and,
-    for torrents, have at least ``min_seeders`` seeders."""
+    """Number of releases that satisfy the profile (i.e. not rejected), aren't
+    executable fakes, and — for torrents — have at least ``min_seeders`` seeders."""
     return sum(
         1 for r in releases
-        if not r.get("rejected", False) and _meets_seeders(r, min_seeders)
+        if not r.get("rejected", False)
+        and not looks_dangerous(r)
+        and _meets_seeders(r, min_seeders)
     )
 
 
@@ -37,7 +51,9 @@ def seeder_filtered_count(releases: list[dict], min_seeders: int) -> int:
     would have qualified at min_seeders=0. Used to explain the gate in the UI."""
     return sum(
         1 for r in releases
-        if not r.get("rejected", False) and not _meets_seeders(r, min_seeders)
+        if not r.get("rejected", False)
+        and not looks_dangerous(r)
+        and not _meets_seeders(r, min_seeders)
     )
 
 
