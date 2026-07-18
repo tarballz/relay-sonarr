@@ -139,8 +139,13 @@ async def resolve_step(registry: Registry, step: FallbackStep) -> dict:
             raise ValueError(f"No quality profiles on instance '{step.instanceId}'")
         profile_id, profile_name = profiles[0]["id"], profiles[0]["name"]
 
+    # Precedence: explicit per-step override > the instance's configured default >
+    # whatever Sonarr lists first. The middle rung matters once an instance has
+    # root folders on more than one pool, where "first" is the wrong answer.
     if step.root_folder:
         root = step.root_folder
+    elif inst.default_root_folder:
+        root = inst.default_root_folder
     else:
         folders = await inst.client.root_folders()
         if not folders:

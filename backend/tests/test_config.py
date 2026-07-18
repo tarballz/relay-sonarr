@@ -53,3 +53,32 @@ def test_missing_env_var_raises(tmp_path):
 
     with pytest.raises(ValueError, match="SONARR_4K_API_KEY"):
         load_config(_write(tmp_path), env={"SONARR_1080P_API_KEY": "x"})
+
+
+RAW_WITH_DEFAULT_ROOT = """
+instances:
+  - id: "1080p"
+    name: "Sonarr 1080p"
+    url: "http://192.168.1.10:8989"
+    api_key: "${SONARR_1080P_API_KEY}"
+    default_root_folder: "/data2/TV/TV-1080p"
+  - id: "4k"
+    name: "Sonarr 4K"
+    url: "http://192.168.1.10:8990"
+    api_key: "${SONARR_4K_API_KEY}"
+"""
+
+
+def test_parses_optional_default_root_folder(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(RAW_WITH_DEFAULT_ROOT)
+    cfg = load_config(p, env={"SONARR_1080P_API_KEY": "x", "SONARR_4K_API_KEY": "y"})
+    by_id = {i.id: i for i in cfg.instances}
+    assert by_id["1080p"].default_root_folder == "/data2/TV/TV-1080p"
+    # Omitted entirely -> None, so behaviour is unchanged for instances that don't set it.
+    assert by_id["4k"].default_root_folder is None
+
+
+def test_default_root_folder_absent_is_none(tmp_path):
+    cfg = load_config(_write(tmp_path), env={"SONARR_1080P_API_KEY": "x", "SONARR_4K_API_KEY": "y"})
+    assert all(i.default_root_folder is None for i in cfg.instances)

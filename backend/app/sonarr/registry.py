@@ -19,6 +19,7 @@ class Instance:
     name: str
     url: str
     client: SonarrClient
+    default_root_folder: str | None = None
 
 
 class Registry:
@@ -30,6 +31,7 @@ class Registry:
                 name=cfg.name,
                 url=cfg.url,
                 client=SonarrClient(base_url=cfg.url, api_key=cfg.api_key),
+                default_root_folder=cfg.default_root_folder,
             )
         self._chains = dict(config.fallback_chains)
 

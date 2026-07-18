@@ -98,3 +98,32 @@ async def test_instances_health_reports_online_and_offline():
     assert by_id["1080p"]["online"] is True
     assert by_id["1080p"]["version"] == "4.0.1"
     assert by_id["4k"]["online"] is False
+
+
+@respx.mock
+async def test_instances_health_exposes_default_root_folder():
+    """The UI pre-selects this, so it has to travel with the instance list."""
+    from app.config import Config, InstanceConfig
+    from app.sonarr.registry import Registry
+
+    reg = Registry(
+        Config(
+            instances=[
+                InstanceConfig(
+                    id="1080p", name="Sonarr 1080p", url=A, api_key="ka",
+                    default_root_folder="/data2/TV/TV-1080p",
+                ),
+                InstanceConfig(id="4k", name="Sonarr 4K", url=B, api_key="kb"),
+            ]
+        )
+    )
+    respx.get(f"{A}/api/v3/system/status").mock(
+        return_value=httpx.Response(200, json={"version": "4.0.1"})
+    )
+    respx.get(f"{B}/api/v3/system/status").mock(
+        return_value=httpx.Response(200, json={"version": "4.0.1"})
+    )
+
+    by_id = {h["id"]: h for h in await health.instances_health(reg)}
+    assert by_id["1080p"]["defaultRootFolder"] == "/data2/TV/TV-1080p"
+    assert by_id["4k"]["defaultRootFolder"] is None

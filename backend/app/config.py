@@ -21,6 +21,10 @@ class InstanceConfig(BaseModel):
     name: str
     url: str
     api_key: str
+    # Root folder to use when a request doesn't name one. Without it the code
+    # falls back to whichever root folder Sonarr happens to list first, which is
+    # the oldest one — wrong once storage spans more than one pool.
+    default_root_folder: str | None = None
 
 
 class FallbackStep(BaseModel):
@@ -66,6 +70,7 @@ def load_config(path: str | Path, env: dict[str, str] | None = None) -> Config:
                 name=item["name"],
                 url=_expand(item["url"], env).rstrip("/"),
                 api_key=_expand(item["api_key"], env),
+                default_root_folder=item.get("default_root_folder"),
             )
         )
     chains: dict[str, list[FallbackStep]] = {}

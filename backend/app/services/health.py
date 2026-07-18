@@ -17,6 +17,9 @@ async def instances_health(registry: Registry) -> list[dict]:
                 "url": inst.url,
                 "online": online,
                 "version": res.get("version") if online else None,
+                # Lets the Add dialog pre-select the right root folder instead of
+                # defaulting to whichever one Sonarr lists first.
+                "defaultRootFolder": inst.default_root_folder,
             }
         )
     return out

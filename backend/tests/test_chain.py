@@ -61,6 +61,55 @@ async def test_resolve_step_resolves_named_profile():
 
 
 @respx.mock
+async def test_resolve_step_prefers_instance_default_root_folder():
+    """An instance's configured default wins over "just take the first one".
+
+    Without this, adding a series picks rootfolder[0] — which is the *old*
+    storage pool — silently defeating the move to the new one.
+    """
+    cfg = Config(
+        instances=[
+            InstanceConfig(
+                id="1080p", name="Sonarr 1080p", url=A, api_key="ka",
+                default_root_folder="/data2/TV/TV-1080p",
+            ),
+            InstanceConfig(id="4k", name="Sonarr 4K", url=B, api_key="kb"),
+        ],
+    )
+    reg = Registry(cfg)
+    respx.get(f"{A}/api/v3/qualityprofile").mock(
+        return_value=httpx.Response(200, json=[{"id": 4, "name": "HD-1080p"}])
+    )
+    respx.get(f"{A}/api/v3/rootfolder").mock(
+        return_value=httpx.Response(
+            200, json=[{"id": 1, "path": "/data/TV/TV-1080p"},
+                       {"id": 2, "path": "/data2/TV/TV-1080p"}]
+        )
+    )
+    resolved = await resolve_step(reg, FallbackStep(instanceId="1080p"))
+    assert resolved["rootFolderPath"] == "/data2/TV/TV-1080p"
+
+
+@respx.mock
+async def test_resolve_step_explicit_step_root_folder_beats_instance_default():
+    """Per-step override still wins — the default is only a fallback."""
+    cfg = Config(
+        instances=[
+            InstanceConfig(
+                id="1080p", name="Sonarr 1080p", url=A, api_key="ka",
+                default_root_folder="/data2/TV/TV-1080p",
+            ),
+        ],
+    )
+    reg = Registry(cfg)
+    mock_1080p_profiles()
+    resolved = await resolve_step(
+        reg, FallbackStep(instanceId="1080p", root_folder="/explicit")
+    )
+    assert resolved["rootFolderPath"] == "/explicit"
+
+
+@respx.mock
 async def test_resolve_step_raises_for_missing_profile():
     reg = make_registry()
     respx.get(f"{A}/api/v3/qualityprofile").mock(

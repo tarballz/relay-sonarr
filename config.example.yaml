@@ -10,6 +10,11 @@ instances:
     name: "Sonarr 4K"
     url: "http://192.168.1.10:8990"
     api_key: "${SONARR_4K_API_KEY}"
+    # Optional. Root folder used when a request doesn't name one — for both the
+    # Add dialog's pre-selection and fallback-chain steps. Omit and the code
+    # falls back to whichever root folder Sonarr lists first, which is the
+    # oldest one; set this explicitly once an instance spans two storage pools.
+    # default_root_folder: "/data2/TV/TV-4K"
 
 # Ordered fallback chain used by the smart-add flow, keyed by the starting
 # instance. Each step is tried only if the previous tier had no qualifying

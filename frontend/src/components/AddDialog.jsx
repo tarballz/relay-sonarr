@@ -66,11 +66,16 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
               api.profiles(i.id),
               api.rootFolders(i.id),
             ]);
+            // Prefer the instance's configured default; rootFolders[0] is the
+            // oldest one, which is the wrong pool once storage spans two.
+            const preferred =
+              rootFolders.find((r) => r.path === i.defaultRootFolder)?.path ??
+              rootFolders[0]?.path;
             return [i.id, {
               profiles,
               rootFolders,
               profileId: profiles[0]?.id,
-              rootFolderPath: rootFolders[0]?.path,
+              rootFolderPath: preferred,
             }];
           } catch {
             return [i.id, { profiles: [], rootFolders: [], error: true }];
