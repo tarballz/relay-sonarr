@@ -153,13 +153,23 @@ _STALLABLE_STATUSES = {"downloading", "queued", "stalled", "warning"}
 
 
 def _is_stalled(record: dict, *, now: datetime, stalled_days: float) -> bool:
-    """A torrent downloading at literal 0% (no bytes) since longer than the threshold."""
+    """A torrent that has transferred nothing since longer than the threshold.
+
+    "Nothing" has two shapes, and both count:
+      * size > 0 and sizeleft == size — size known, not a byte received.
+      * size == 0 — Sonarr never even learned a size, i.e. the torrent never
+        fetched its metadata. This is the *deadest* state, but an earlier
+        `size <= 0` guard skipped it, so these were never swept.
+    """
     if record.get("protocol") != "torrent":
         return False
     if (record.get("status") or "").lower() not in _STALLABLE_STATUSES:
         return False
     size = record.get("size") or 0
-    if size <= 0 or record.get("sizeleft") != size:  # sizeleft==size means 0% downloaded
+    sizeleft = record.get("sizeleft")
+    if sizeleft is None:
+        return False
+    if size > 0 and sizeleft != size:  # some bytes arrived: progressing, not stalled
         return False
     added = record.get("added")
     if not added:

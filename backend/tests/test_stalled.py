@@ -52,6 +52,31 @@ async def test_sweep_removes_only_old_zero_percent_torrents(tmp_path):
 
 
 @respx.mock
+async def test_sweep_catches_records_with_unknown_size(tmp_path):
+    # Sonarr reports size=0/sizeleft=0 when a torrent never fetched its metadata
+    # — the deadest state there is. The old `size <= 0` guard skipped exactly
+    # those, so they were never swept (seen live: 80 queue records at size=0,
+    # stuck 37 days, blocking re-grabs because the queue "already meets cutoff").
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    records = [
+        _rec(id=31, size=0, sizeleft=0, status="queued",
+             added=(NOW - timedelta(days=37)).isoformat()),                      # REMOVE
+        _rec(id=32, size=0, sizeleft=0, status="queued",
+             added=(NOW - timedelta(hours=2)).isoformat()),                      # too new: metadata may still arrive
+    ]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/31").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW)
+
+    assert removed == 1
+    assert del_route.called
+
+
+@respx.mock
 async def test_sweep_catches_queued_zero_percent(tmp_path):
     # Sonarr reports torrents the client hasn't started as status "queued" —
     # at 0% for days they're just as dead as "downloading" ones (seen live:
