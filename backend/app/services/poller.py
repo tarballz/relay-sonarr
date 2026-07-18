@@ -18,6 +18,7 @@ from app.services.fanout import gather_instances
 logger = logging.getLogger(__name__)
 from app.sonarr.registry import Instance, Registry
 from app.store import placements as place_store
+from app.store import progress
 
 EVENT_IMPORTED = "downloadFolderImported"
 EVENT_FAILED = "downloadFailed"
@@ -195,11 +196,33 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
     client, blocklists the release, and re-searches. Returns the number removed."""
     removed = 0
     skipped = 0
+    live: set[str] = set()
     for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
         if isinstance(res, Exception):
             continue
-        for r in res.get("records", []):
-            if not _is_stalled(r, now=now, stalled_days=stalled_days):
+        # Group by torrent. A season pack is one torrent but one queue record per
+        # episode, and deleting any one record removes the whole torrent — so the
+        # siblings would 404. Decide and act once per torrent.
+        groups: dict[str, list[dict]] = {}
+        for rec in res.get("records", []):
+            key = (rec.get("downloadId") or "").strip().lower() or f"__rec{rec.get('id')}"
+            groups.setdefault(key, []).append(rec)
+        live |= set(groups)
+
+        for key, recs in groups.items():
+            r = recs[0]
+            # Sum across the group: each episode record holds a slice of the torrent.
+            total_left = sum((x.get("sizeleft") or 0) for x in recs)
+            unchanged_since = await progress.observe(
+                db, download_id=key, sizeleft=total_left, now=now,
+            )
+            frozen = (
+                r.get("protocol") == "torrent"
+                and (r.get("status") or "").lower() in _STALLABLE_STATUSES
+                and progress.stalled_since(
+                    unchanged_since, now=now, stalled_days=stalled_days)
+            )
+            if not (_is_stalled(r, now=now, stalled_days=stalled_days) or frozen):
                 continue
             if removed >= cap:
                 skipped += 1
@@ -211,15 +234,18 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                 kind="stalled-cleanup", title=title, tvdb_id=r.get("seriesId") or 0,
                 started_at=now.isoformat(), source="reconciler",
             )
+            total_size = sum((x.get("size") or 0) for x in recs)
+            pct = (total_size - total_left) / total_size * 100 if total_size else 0.0
             try:
                 await inst.client.delete_queue_item(r["id"])
                 await ops.add_step(op_id, {
                     "phase": "remove", "status": "done",
-                    "message": f"Removed stalled torrent — {title}, 0% for {age_days}d "
-                               f"(blocklisted; Sonarr re-searching)",
+                    "message": f"Removed stalled torrent — {title}, stuck at {pct:.0f}% "
+                               f"for {age_days}d (blocklisted; Sonarr re-searching)",
                 })
                 await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
                                  finished_at=now.isoformat())
+                await progress.forget(db, key)
                 removed += 1
             except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
                 await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())

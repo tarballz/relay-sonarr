@@ -52,6 +52,76 @@ async def test_sweep_removes_only_old_zero_percent_torrents(tmp_path):
 
 
 @respx.mock
+async def test_sweep_catches_download_frozen_at_partial_progress(tmp_path):
+    # A torrent that downloaded some bytes and then died is invisible to the
+    # "transferred nothing" checks: it has real progress, so sizeleft != size.
+    # Sonarr exposes no activity timestamp, so the only tell is sizeleft failing
+    # to move between ticks (seen live: 9 torrents frozen at 1-97%, 0 peers).
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    frozen = _rec(id=41, size=1000, sizeleft=540, downloadId="FROZEN",
+                  added=(NOW - timedelta(days=30)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([frozen]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/41").mock(return_value=httpx.Response(200))
+
+    # First sighting establishes the baseline — nothing is swept on one observation.
+    assert await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW) == 0
+    assert not del_route.called
+
+    # Still 540 bytes left four days later: it has not moved.
+    later = NOW + timedelta(days=4)
+    assert await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=later) == 1
+    assert del_route.called
+
+
+@respx.mock
+async def test_sweep_leaves_a_download_that_is_still_progressing(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/51").mock(return_value=httpx.Response(200))
+
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(
+        [_rec(id=51, size=1000, sizeleft=900, downloadId="MOVING",
+              added=(NOW - timedelta(days=30)).isoformat())]))
+    await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW)
+
+    # Four days on it has advanced 900 -> 300, so the clock restarts.
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(
+        [_rec(id=51, size=1000, sizeleft=300, downloadId="MOVING",
+              added=(NOW - timedelta(days=30)).isoformat())]))
+    removed = await sweep_stalled(reg, db, ops, stalled_days=3, cap=25,
+                                  now=NOW + timedelta(days=4))
+
+    assert removed == 0
+    assert not del_route.called
+
+
+@respx.mock
+async def test_sweep_deletes_a_season_pack_once(tmp_path):
+    # A season pack is one torrent but one queue record per episode. Deleting any
+    # record removes the whole torrent, so the siblings 404 (seen live: 19-record
+    # packs producing a burst of 404 warnings).
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    pack = [_rec(id=60 + i, size=0, sizeleft=0, downloadId="PACK", status="queued",
+                 added=(NOW - timedelta(days=30)).isoformat()) for i in range(19)]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(pack))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    routes = [respx.delete(f"{A}/api/v3/queue/{60 + i}").mock(
+        return_value=httpx.Response(200)) for i in range(19)]
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW)
+
+    assert removed == 1, "one torrent, so exactly one delete"
+    assert sum(1 for r in routes if r.called) == 1
+
+
+@respx.mock
 async def test_sweep_catches_records_with_unknown_size(tmp_path):
     # Sonarr reports size=0/sizeleft=0 when a torrent never fetched its metadata
     # — the deadest state there is. The old `size <= 0` guard skipped exactly
@@ -103,7 +173,10 @@ async def test_sweep_respects_per_tick_cap(tmp_path):
     db = Database(str(tmp_path / "relay.db"))
     ops = OperationStore(db)
     reg = make_registry()
-    records = [_rec(id=100 + i, added=(NOW - timedelta(days=10)).isoformat()) for i in range(5)]
+    # Distinct downloadIds: five separate torrents, not one pack. The cap counts
+    # torrents, and records sharing a downloadId collapse to a single removal.
+    records = [_rec(id=100 + i, downloadId=f"HASH{i}",
+                    added=(NOW - timedelta(days=10)).isoformat()) for i in range(5)]
     respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
     respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
     for i in range(5):

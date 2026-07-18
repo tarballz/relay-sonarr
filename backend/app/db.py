@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS operation_step (
   event_json   TEXT NOT NULL
 );
 
+-- Remembers how many bytes each torrent still needed, and since when that number
+-- last moved. Sonarr's queue exposes no activity timestamp, so a download that
+-- started and then died is indistinguishable from a healthy one in any single
+-- poll — the only signal is sizeleft failing to change between ticks.
+CREATE TABLE IF NOT EXISTS download_progress (
+  download_id     TEXT PRIMARY KEY,
+  sizeleft        INTEGER,
+  unchanged_since TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_step_op   ON operation_step(operation_id, seq);
 CREATE INDEX IF NOT EXISTS idx_op_id     ON operation(id DESC);
 CREATE INDEX IF NOT EXISTS idx_place_tvdb ON placement(tvdb_id);
