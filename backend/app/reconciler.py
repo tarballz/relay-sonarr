@@ -41,7 +41,8 @@ class Reconciler:
                  clock=None, sleep=asyncio.sleep, wait_attempts: int = 10,
                  wait_delay: float = 1.5, enabled: bool = True,
                  stalled_cleanup: bool = True, stalled_cap: int = 25,
-                 dangerous_cleanup: bool = True):
+                 dangerous_cleanup: bool = True,
+                 search_stall_cleanup: bool = True):
         self.registry = registry
         self.db = db
         self.ops = operations
@@ -59,6 +60,7 @@ class Reconciler:
         self.stalled_cleanup = stalled_cleanup
         self._stalled_cap = stalled_cap
         self.dangerous_cleanup = dangerous_cleanup
+        self.search_stall_cleanup = search_stall_cleanup
         self._started_at = self.now()
         self._last_tick_started_at: datetime | None = None
         self._last_tick_finished_at: datetime | None = None
@@ -169,6 +171,15 @@ class Reconciler:
                 )
             except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
                 logger.exception("dangerous sweep failed")
+        if self.search_stall_cleanup:
+            try:
+                defaults = await settings_store.get_defaults(self.db)
+                await poller.sweep_search_stalls(
+                    self.db, stall_hours=defaults.get("searchStallHours", 6),
+                    cap=self._stalled_cap, now=self.now(),
+                )
+            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
+                logger.exception("search-stall sweep failed")
         await self._ensure_intents()
         results = []
         for intent in await intent_store.all_active(self.db):

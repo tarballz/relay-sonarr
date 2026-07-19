@@ -35,6 +35,10 @@ def _dangerous_cleanup_enabled() -> bool:
     return os.environ.get("DANGEROUS_CLEANUP_ENABLED", "true").lower() != "false"
 
 
+def _search_stall_cleanup_enabled() -> bool:
+    return os.environ.get("SEARCH_STALL_CLEANUP_ENABLED", "true").lower() != "false"
+
+
 def _configure_logging() -> None:
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
@@ -71,6 +75,7 @@ async def lifespan(app: FastAPI):
         app.state.registry, app.state.db, app.state.operations,
         enabled=enabled, stalled_cleanup=_stalled_cleanup_enabled(),
         dangerous_cleanup=_dangerous_cleanup_enabled(),
+        search_stall_cleanup=_search_stall_cleanup_enabled(),
     )
     task = None
     if enabled:

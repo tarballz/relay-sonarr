@@ -108,3 +108,51 @@ async def test_sweep_respects_cap(tmp_path):
         if row["state"] == "wanted":
             reverted += 1
     assert reverted == 2
+
+
+import httpx
+import respx
+
+from app.reconciler import Reconciler
+from app.store.operations import OperationStore
+from tests.test_chain import A, B, _nosleep, make_registry
+
+
+def _empty(url):
+    respx.get(f"{url}/api/v3/series").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{url}/api/v3/queue").mock(
+        return_value=httpx.Response(200, json={"records": []}))
+    respx.get(f"{url}/api/v3/history").mock(
+        return_value=httpx.Response(200, json={"records": []}))
+
+
+@respx.mock
+async def test_tick_reverts_stale_searching(tmp_path):
+    # No series present on either instance, so poll_all / reconcile won't touch the
+    # row — isolating the reaper's effect: a stale 'searching' row becomes 'wanted'.
+    db = Database(str(tmp_path / "relay.db"))
+    _empty(A)
+    _empty(B)
+    rec = Reconciler(make_registry(), db, OperationStore(db),
+                     clock=lambda: NOW, sleep=_nosleep)
+    await _seed(db, 777, 1, 2, state="searching",
+                last_search_at=(NOW - timedelta(hours=12)).isoformat())
+
+    await rec.tick()
+
+    assert (await place_store.get(db, 777, 1, 2))["state"] == "wanted"
+
+
+@respx.mock
+async def test_tick_skips_reaper_when_disabled(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    _empty(A)
+    _empty(B)
+    rec = Reconciler(make_registry(), db, OperationStore(db),
+                     clock=lambda: NOW, sleep=_nosleep, search_stall_cleanup=False)
+    await _seed(db, 777, 1, 2, state="searching",
+                last_search_at=(NOW - timedelta(hours=12)).isoformat())
+
+    await rec.tick()
+
+    assert (await place_store.get(db, 777, 1, 2))["state"] == "searching"
