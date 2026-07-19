@@ -38,6 +38,23 @@ async def all_rows(db: Database) -> list:
     return await db.query("SELECT * FROM placement")
 
 
+async def stalled_searching(db: Database, *, before_iso: str, limit: int) -> list:
+    """Rows wedged in 'searching' with no download, last searched before ``before_iso``.
+
+    Oldest ``last_search_at`` first so the longest-wedged episodes recover first.
+    A null ``download_id`` distinguishes 'searched but nothing came back' from an
+    in-flight grab (the poller stamps ``download_id`` on grab)."""
+    return await db.query(
+        "SELECT * FROM placement "
+        "WHERE state='searching' "
+        "  AND (download_id IS NULL OR download_id='') "
+        "  AND last_search_at IS NOT NULL "
+        "  AND last_search_at < ? "
+        "ORDER BY last_search_at ASC LIMIT ?",
+        (before_iso, limit),
+    )
+
+
 async def get(db: Database, tvdb_id: int, season: int, episode: int):
     return await db.query_one(
         "SELECT * FROM placement WHERE tvdb_id=? AND season=? AND episode=?",
