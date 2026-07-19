@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.db import Database
+from app.services.poller import sweep_search_stalls
 from app.store import placements as place_store
 
 NOW = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
@@ -58,3 +59,52 @@ async def test_stalled_searching_respects_limit_and_orders_oldest_first(tmp_path
     rows = await place_store.stalled_searching(db, before_iso=before, limit=2)
 
     assert [(r["season"], r["episode"]) for r in rows] == [(1, 2), (1, 1)]  # oldest first, capped at 2
+
+
+async def test_sweep_reverts_stuck_searching_to_wanted(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    await _seed(db, 1, 1, 1, state="searching",
+                last_search_at=(NOW - timedelta(hours=12)).isoformat())
+
+    transitions = await sweep_search_stalls(db, stall_hours=6, cap=25, now=NOW)
+
+    assert transitions == [
+        {"tvdbId": 1, "season": 1, "episode": 1, "from": "searching", "to": "wanted"}
+    ]
+    row = await place_store.get(db, 1, 1, 1)
+    assert row["state"] == "wanted"
+
+
+async def test_sweep_leaves_in_flight_and_recent_and_other_states(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    old = (NOW - timedelta(hours=12)).isoformat()
+    await _seed(db, 1, 1, 2, state="searching", last_search_at=old, download_id="HASH")
+    await _seed(db, 1, 1, 3, state="searching",
+                last_search_at=(NOW - timedelta(hours=1)).isoformat())
+    await _seed(db, 1, 1, 4, state="grabbed", last_search_at=old, download_id="H2")
+    await _seed(db, 1, 1, 5, state="importing", last_search_at=old, download_id="H3")
+    await _seed(db, 1, 1, 6, state="failed", last_search_at=old)
+
+    transitions = await sweep_search_stalls(db, stall_hours=6, cap=25, now=NOW)
+
+    assert transitions == []
+    for ep, expected in [(2, "searching"), (3, "searching"), (4, "grabbed"),
+                         (5, "importing"), (6, "failed")]:
+        assert (await place_store.get(db, 1, 1, ep))["state"] == expected
+
+
+async def test_sweep_respects_cap(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    for ep in range(1, 6):
+        await _seed(db, 1, 1, ep, state="searching",
+                    last_search_at=(NOW - timedelta(hours=12 + ep)).isoformat())
+
+    transitions = await sweep_search_stalls(db, stall_hours=6, cap=2, now=NOW)
+
+    assert len(transitions) == 2
+    reverted = 0
+    for ep in range(1, 6):
+        row = await place_store.get(db, 1, 1, ep)
+        if row["state"] == "wanted":
+            reverted += 1
+    assert reverted == 2

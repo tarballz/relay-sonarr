@@ -147,6 +147,37 @@ async def poll_all(registry: Registry, db, *, now: datetime | None = None, **kw)
     return {"instances": out, "transitionCount": total}
 
 
+async def sweep_search_stalls(db, *, stall_hours: float, cap: int,
+                              now: datetime) -> list[dict]:
+    """Revert episodes wedged in 'searching' back to 'wanted' so the reconciler
+    re-searches them.
+
+    An episode is marked 'searching' the moment a search is issued — before any
+    download exists. A search that finds nothing produces no queue item and no
+    history event, so the poller never advances it and it stays 'searching'
+    forever. This reaper reverts rows that are 'searching', have no download_id,
+    and were last searched more than ``stall_hours`` ago. Pure DB state — makes
+    no Sonarr calls. Returns the transitions applied (for the caller to log)."""
+    before = (now - timedelta(hours=stall_hours)).isoformat()
+    rows = await place_store.stalled_searching(db, before_iso=before, limit=cap)
+    transitions: list[dict] = []
+    for row in rows:
+        await place_store.update_tracking(
+            db, row["tvdb_id"], row["season"], row["episode"],
+            updated_at=now.isoformat(), state="wanted",
+        )
+        transitions.append({
+            "tvdbId": row["tvdb_id"], "season": row["season"],
+            "episode": row["episode"], "from": "searching", "to": "wanted",
+        })
+    if transitions:
+        logger.info("search-stall sweep reverted %d episode(s) to wanted", len(transitions))
+    if len(rows) == cap:
+        logger.warning("search-stall sweep hit per-tick cap (%d); more may remain "
+                       "and will drain next tick", cap)
+    return transitions
+
+
 # "queued" included: the client may report a torrent it never started as queued,
 # and at 0% past the threshold that's just as dead as a stalled "downloading" one.
 # "paused" is deliberately excluded — that's a user decision.
