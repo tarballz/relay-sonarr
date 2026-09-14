@@ -30,7 +30,7 @@ class Registry:
                 id=cfg.id,
                 name=cfg.name,
                 url=cfg.url,
-                client=SonarrClient(base_url=cfg.url, api_key=cfg.api_key),
+                client=SonarrClient(base_url=cfg.url, api_key=cfg.api_key, name=cfg.id),
                 default_root_folder=cfg.default_root_folder,
             )
         self._chains = dict(config.fallback_chains)
@@ -42,6 +42,11 @@ class Registry:
 
     def all(self) -> list[Instance]:
         return list(self._instances.values())
+
+    async def aclose(self) -> None:
+        """Close every instance's shared HTTP pool (app shutdown)."""
+        for inst in self._instances.values():
+            await inst.client.aclose()
 
     def fallback_chain(self, instance_id: str) -> list[FallbackStep]:
         """Ordered fallback steps for an instance (empty if none configured)."""
