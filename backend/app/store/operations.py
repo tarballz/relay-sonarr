@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 from app.db import Database
+from app.obs import context
 
 
 class OperationStore:
@@ -19,11 +20,12 @@ class OperationStore:
 
     async def start(self, *, kind: str, title: str, tvdb_id: int | None, started_at: str,
                     source: str = "user") -> int:
-        """Create an operation row; returns its id for add_step/finish."""
+        """Create an operation row; returns its id for add_step/finish. Stamps the
+        current reconciler tick (if any) so the trace joins the tick's events."""
         return await self.db.execute(
-            "INSERT INTO operation(kind, title, tvdb_id, source, started_at) "
-            "VALUES(?, ?, ?, ?, ?)",
-            (kind, title, tvdb_id, source, started_at),
+            "INSERT INTO operation(kind, title, tvdb_id, source, started_at, tick_id) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (kind, title, tvdb_id, source, started_at, context.tick_id.get()),
         )
 
     async def add_step(self, op_id: int, event: dict) -> None:
@@ -44,27 +46,46 @@ class OperationStore:
             (json.dumps(result) if result is not None else None, error, finished_at, op_id),
         )
 
-    async def recent(self, limit: int = 200) -> list[dict]:
-        """All retained operations, newest first, in the UI's expected shape."""
-        ops = await self.db.query(
-            "SELECT * FROM operation ORDER BY id DESC LIMIT ?", (limit,)
+    @staticmethod
+    def _shape(op, steps: list) -> dict:
+        return {
+            "id": op["id"],
+            "kind": op["kind"],
+            "title": op["title"],
+            "tvdbId": op["tvdb_id"],
+            "startedAt": op["started_at"],
+            "steps": steps,
+            "result": json.loads(op["result_json"]) if op["result_json"] else None,
+            "error": op["error"],
+            "finishedAt": op["finished_at"],
+            "source": op["source"],
+            "tickId": op["tick_id"],
+        }
+
+    async def _steps_for(self, op_ids: list[int]) -> dict[int, list]:
+        if not op_ids:
+            return {}
+        marks = ", ".join("?" * len(op_ids))
+        rows = await self.db.query(
+            f"SELECT operation_id, event_json FROM operation_step "
+            f"WHERE operation_id IN ({marks}) ORDER BY operation_id, seq",
+            tuple(op_ids),
         )
-        out: list[dict] = []
-        for op in ops:
-            steps = await self.db.query(
-                "SELECT event_json FROM operation_step WHERE operation_id=? ORDER BY seq",
-                (op["id"],),
-            )
-            out.append({
-                "id": op["id"],
-                "kind": op["kind"],
-                "title": op["title"],
-                "tvdbId": op["tvdb_id"],
-                "startedAt": op["started_at"],
-                "steps": [json.loads(s["event_json"]) for s in steps],
-                "result": json.loads(op["result_json"]) if op["result_json"] else None,
-                "error": op["error"],
-                "finishedAt": op["finished_at"],
-                "source": op["source"],
-            })
-        return out
+        grouped: dict[int, list] = {}
+        for r in rows:
+            grouped.setdefault(r["operation_id"], []).append(json.loads(r["event_json"]))
+        return grouped
+
+    async def recent(self, limit: int = 200) -> list[dict]:
+        """All retained operations, newest first, in the UI's expected shape.
+        Two queries total, however many operations there are."""
+        ops = await self.db.query("SELECT * FROM operation ORDER BY id DESC LIMIT ?", (limit,))
+        steps = await self._steps_for([op["id"] for op in ops])
+        return [self._shape(op, steps.get(op["id"], [])) for op in ops]
+
+    async def get(self, op_id: int) -> dict | None:
+        op = await self.db.query_one("SELECT * FROM operation WHERE id=?", (op_id,))
+        if op is None:
+            return None
+        steps = await self._steps_for([op_id])
+        return self._shape(op, steps.get(op_id, []))
