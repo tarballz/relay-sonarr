@@ -5,10 +5,11 @@ import hmac
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
+from app.obs import sse
 from app.obs.metrics import METRICS
-from app.state import get_db, get_monitor, get_operations
+from app.state import get_db, get_event_journal, get_monitor, get_operations
 from app.store import events as events_store
 from app.store import summary
 from app.store import ticks as tick_store
@@ -51,6 +52,24 @@ async def list_events(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"items": items, "nextBefore": items[-1]["id"] if len(items) == limit else None}
+
+
+@router.get("/api/events/stream")
+async def events_stream(
+    request: Request,
+    since: int | None = None,
+    db=Depends(get_db),
+    journal=Depends(get_event_journal),
+):
+    """Live journal as SSE. Resumes from ``Last-Event-ID`` (sent automatically by
+    EventSource on reconnect) or ``?since=``; otherwise live events only."""
+    header = request.headers.get("last-event-id", "")
+    last = int(header) if header.isdigit() else since
+    return StreamingResponse(
+        sse.event_stream(journal, db, last_event_id=last),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/api/ticks")
