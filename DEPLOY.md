@@ -66,7 +66,9 @@ So a host/LAN request can't bypass Access by hitting `:8088` directly:
 - **`GET /metrics`** — Prometheus text format (tick counts/durations, Sonarr call
   latency and outcomes per instance, `relay_sonarr_up`, placement states, sweep
   removals, journal volume). Exempt from Cloudflare Access; set `METRICS_TOKEN` to
-  require a bearer token. Example scrape job and a staleness alert:
+  require a bearer token. Without `METRICS_TOKEN`, anyone who can reach the
+  container port on the LAN (`:8088`) can read it (counts and instance ids only).
+  Example scrape job and a staleness alert:
 
   ```yaml
   scrape_configs:
@@ -83,7 +85,9 @@ So a host/LAN request can't bypass Access by hitting `:8088` directly:
 - **Instance monitor** — probes each Sonarr every 60s and reads its own `/health` checks
   every ~5 min (indexer outages show up here), even with `RECONCILER_ENABLED=false`.
 - **Retention** — events are kept 3d (debug) / 30d (info) / 90d (warn, error), ticks 90d,
-  operations 60d; pruned once a day.
+  operations 60d; pruned once a day. On the first start after upgrading, retention
+  immediately prunes existing history past these windows (e.g. operations older than
+  60 days) — take a backup first (see Backups below).
 - Logs go to stdout — `docker compose logs -f sonarr-unified`. Set `LOG_LEVEL=DEBUG`
   in `.env` for per-request detail, `LOG_FORMAT=json` for structured lines. Lines
   inside a tick carry `[tick=N tvdb=M]`.
