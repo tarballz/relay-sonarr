@@ -148,6 +148,34 @@ async def test_manual_tick_rejected_while_a_tick_runs(db):
     assert (await tick_store.get(db, 2))["trigger"] == "manual"
 
 
+async def test_loop_survives_tick_bookkeeping_failure(db, monkeypatch):
+    """A DB error out of tick_store.finish() must not kill the background loop
+    (regression: run() previously let a bookkeeping exception from _run_once
+    escape and die the task, silent until lifespan noticed at shutdown)."""
+    rec = _rec(db, interval=0, jitter=0)
+    rec.tick = _ok_tick
+
+    calls: list = []
+
+    async def flaky_finish(*_a, **_k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("app.reconciler.tick_store.finish", flaky_finish)
+
+    task = asyncio.create_task(rec.run())
+    for _ in range(200):  # bounded poll (~2s worst case)
+        if len(calls) >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    rec.stop()
+    await asyncio.wait_for(task, timeout=2)  # must finish clean, not raise
+
+    assert len(calls) >= 2
+
+
 async def test_zero_release_spike_is_journaled_at_tick_end(db, journal):
     rec = _rec(db)
 

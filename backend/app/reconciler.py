@@ -94,7 +94,10 @@ class Reconciler:
             source="reconciler", data={"intervalS": self.interval},
         )
         while not self._stop.is_set():
-            await self._run_once("schedule")
+            try:
+                await self._run_once("schedule")
+            except Exception:  # noqa: BLE001 - tick bookkeeping (DB) must not kill the loop
+                logger.exception("reconciler iteration failed")
             delay = self.interval + random.uniform(0, self.jitter)
             self._next_tick_at = self.now() + timedelta(seconds=delay)
             try:
