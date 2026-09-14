@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
@@ -22,6 +23,14 @@ router = APIRouter(prefix="/api", tags=["add"])
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _error_message(exc: Exception) -> str:
+    """A never-empty description of a failed operation. Some exceptions (httpx
+    timeouts among them) stringify to '', which left the UI with a blank toast."""
+    if isinstance(exc, httpx.TimeoutException):
+        return f"Timed out waiting for Sonarr ({type(exc).__name__})"
+    return str(exc) or type(exc).__name__
 
 
 async def _seeder_opts(db) -> tuple[int, bool]:
@@ -54,7 +63,7 @@ async def _event_stream(ops: OperationStore, op_id: int, coro_factory):
             result = await coro_factory(emit)
             await queue.put(("result", result))
         except Exception as exc:  # noqa: BLE001 - surface to the client as an event
-            error = str(exc)
+            error = _error_message(exc)
             await queue.put(("error", {"message": error}))
         finally:
             await ops.finish(op_id, result=result, error=error, finished_at=_now())
