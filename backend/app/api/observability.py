@@ -1,6 +1,7 @@
 """Observability endpoints: Prometheus metrics, the event journal, tick history, summary."""
 from __future__ import annotations
 
+import hmac
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -20,8 +21,11 @@ async def metrics(request: Request, db=Depends(get_db)):
     """Prometheus scrape target. Exempt from Cloudflare Access (see auth.py); set
     METRICS_TOKEN to require ``Authorization: Bearer <token>`` instead."""
     token = os.environ.get("METRICS_TOKEN")
-    if token and request.headers.get("authorization") != f"Bearer {token}":
-        raise HTTPException(status_code=401, detail="Invalid metrics token")
+    if token:
+        provided = request.headers.get("authorization") or ""
+        expected = f"Bearer {token}"
+        if not hmac.compare_digest(provided.encode(), expected.encode()):
+            raise HTTPException(status_code=401, detail="Invalid metrics token")
     await summary.refresh_gauges(db)
     return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 

@@ -56,6 +56,7 @@ def test_metrics_endpoint_exposes_text_format_and_db_gauges(api, db):
 def test_metrics_token_required_when_configured(api, monkeypatch):
     monkeypatch.setenv("METRICS_TOKEN", "s3cret")
     assert api.get("/metrics").status_code == 401
+    assert api.get("/metrics", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert api.get("/metrics", headers={"Authorization": "Bearer s3cret"}).status_code == 200
 
 
