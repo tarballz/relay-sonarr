@@ -18,6 +18,9 @@ import json
 from datetime import datetime, timezone
 
 from app.episodes import episode_key, find_series_by_tvdb, is_gap
+from app.obs import context, kinds
+from app.obs.journal import get_journal
+from app.obs.metrics import AVAILABILITY_CHECKS
 from app.services.availability import (
     DEFAULT_MIN_SEEDERS,
     count_qualifying,
@@ -93,6 +96,40 @@ async def _episodes_for_tvdb(client, tvdb_id: int):
     return await client.episodes(series["id"])
 
 
+def _count_check(instance_id: str, result: str) -> None:
+    AVAILABILITY_CHECKS.inc(instance=instance_id, result=result)
+    stats = context.tick_stats.get()
+    if stats is not None:
+        stats.availability(instance_id, result)
+
+
+def _journal_verdict_change(*, tvdb_id: int, season: int, episode: int, instance_id: str,
+                            previous, qualifies: bool, total: int, qualifying: int) -> None:
+    """Journal a verdict only when it meaningfully changed: qualifies flipped, or
+    releases went from none to some (or back)."""
+    was_qualifying = bool(previous["qualifies"])
+    was_total = previous["total_releases"] or 0
+    if was_qualifying == qualifies and (was_total == 0) == (total == 0):
+        return
+    label = f"S{season:02d}E{episode:02d} on {instance_id}"
+    if qualifies and not was_qualifying:
+        message = f"{label}: now available ({qualifying} qualifying of {total})"
+    elif was_qualifying and not qualifies:
+        message = f"{label}: no longer available ({total} release(s), none qualify)"
+    elif total == 0:
+        message = f"{label}: releases vanished (was {was_total})"
+    else:
+        message = f"{label}: {total} release(s) appeared, none qualify"
+    get_journal().emit(
+        kinds.AVAILABILITY_CHANGED, message, source="reconciler",
+        tvdb_id=tvdb_id, season=season, episode=episode, instance_id=instance_id,
+        data={
+            "before": {"qualifies": was_qualifying, "totalReleases": was_total},
+            "after": {"qualifies": qualifies, "totalReleases": total, "qualifyingCount": qualifying},
+        },
+    )
+
+
 async def refresh_availability(
     registry: Registry,
     db,
@@ -150,6 +187,7 @@ async def refresh_availability(
                 "rejectionSummary": json.loads(cached["rejection_json"] or "[]"),
                 "cached": True,
             })
+            _count_check(instance_id, "cached")
             return
         async with sem:
             releases = await client.releases(ep["id"])
@@ -163,6 +201,12 @@ async def refresh_availability(
         best = pick_best_torrent(releases, min_seeders)
         if best is not None:
             best = {k: best.get(k) for k in ("guid", "indexerId", "seeders", "title")}
+        _count_check(instance_id, "qualifies" if qc > 0 else ("zero" if not releases else "rejected"))
+        if cached is not None:
+            _journal_verdict_change(
+                tvdb_id=tvdb_id, season=season, episode=epnum, instance_id=instance_id,
+                previous=cached, qualifies=qc > 0, total=len(releases), qualifying=qc,
+            )
         await avail_cache.put(
             db, instance_id=instance_id, tvdb_id=tvdb_id, season=season, episode=epnum,
             qualifies=qc > 0, total_releases=len(releases), qualifying_count=qc,

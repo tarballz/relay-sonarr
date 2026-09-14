@@ -12,6 +12,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.obs import kinds
+from app.obs.journal import get_journal
+from app.obs.metrics import SWEEP_REMOVED
 from app.services.availability import looks_dangerous
 from app.services.fanout import gather_instances
 
@@ -128,6 +131,14 @@ async def poll_instance(
             "tvdbId": tvdb, "season": season, "episode": epnum,
             "from": row["state"], "to": new_state,
         })
+        get_journal().emit(
+            kinds.POLL_TRANSITION,
+            f"S{season:02d}E{epnum:02d} {row['state']} → {new_state} on {instance.id}",
+            level="warn" if new_state == "failed" else "info",
+            source="poller", tvdb_id=tvdb, season=season, episode=epnum,
+            instance_id=instance.id,
+            data={"from": row["state"], "to": new_state, "downloadId": fields.get("download_id")},
+        )
 
     return transitions
 
@@ -165,6 +176,13 @@ async def sweep_search_stalls(db, *, stall_hours: float, cap: int,
         await place_store.update_tracking(
             db, row["tvdb_id"], row["season"], row["episode"],
             updated_at=now.isoformat(), state="wanted",
+        )
+        get_journal().emit(
+            kinds.SWEEP_SEARCH_STALL_REVERTED,
+            f"S{row['season']:02d}E{row['episode']:02d} searched over {stall_hours:g}h ago "
+            f"with no download — back to wanted",
+            source="sweep", tvdb_id=row["tvdb_id"], season=row["season"], episode=row["episode"],
+            data={"lastSearchAt": row["last_search_at"]},
         )
         transitions.append({
             "tvdbId": row["tvdb_id"], "season": row["season"],
@@ -284,8 +302,9 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             added_dt = datetime.fromisoformat(str(r["added"]).replace("Z", "+00:00"))
             age_days = int((now - added_dt).total_seconds() // 86400)
             title = _stalled_title(r)
+            tvdb_id = await tvdb_of(r.get("seriesId"))
             op_id = await ops.start(
-                kind="stalled-cleanup", title=title, tvdb_id=await tvdb_of(r.get("seriesId")),
+                kind="stalled-cleanup", title=title, tvdb_id=tvdb_id,
                 started_at=now.isoformat(), source="reconciler",
             )
             total_size = sum((x.get("size") or 0) for x in recs)
@@ -301,6 +320,14 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                                  finished_at=now.isoformat())
                 await progress.forget(db, key)
                 removed += 1
+                SWEEP_REMOVED.inc(sweep="stalled")
+                get_journal().emit(
+                    kinds.SWEEP_STALLED_REMOVED,
+                    f"Removed stalled torrent — {title}, stuck at {pct:.0f}% for {age_days}d",
+                    source="sweep", tvdb_id=tvdb_id, instance_id=inst.id, operation_id=op_id,
+                    data={"title": title, "ageDays": age_days, "progressPct": round(pct, 1),
+                          "downloadId": r.get("downloadId"), "queueId": r["id"]},
+                )
             except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
                 await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
                 logger.warning("failed to remove stalled torrent %s: %s", r.get("id"), exc)
@@ -349,8 +376,9 @@ async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
             if not _is_dangerous(r) or removed >= cap:
                 continue
             title = _stalled_title(r)
+            tvdb_id = await tvdb_of(r.get("seriesId"))
             op_id = await ops.start(
-                kind="dangerous-cleanup", title=title, tvdb_id=await tvdb_of(r.get("seriesId")),
+                kind="dangerous-cleanup", title=title, tvdb_id=tvdb_id,
                 started_at=now.isoformat(), source="reconciler",
             )
             try:
@@ -366,6 +394,14 @@ async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
                 await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
                                  finished_at=now.isoformat())
                 removed += 1
+                SWEEP_REMOVED.inc(sweep="dangerous")
+                get_journal().emit(
+                    kinds.SWEEP_DANGEROUS_REMOVED,
+                    f"Removed dangerous release — {title} (executable payload; re-searching)",
+                    level="warn", source="sweep", tvdb_id=tvdb_id, instance_id=inst.id,
+                    operation_id=op_id,
+                    data={"title": title, "downloadId": r.get("downloadId"), "queueId": r["id"]},
+                )
             except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
                 await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
                 logger.warning("failed to remove dangerous release %s: %s", r.get("id"), exc)
