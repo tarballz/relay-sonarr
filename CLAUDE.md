@@ -106,6 +106,22 @@ background loop (`run()` → guarded `_run_once()` → `tick()`, default every 3
   `STALLED_CLEANUP_ENABLED`, `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`.
 - **Health** — `GET /api/reconciler/status`; `/healthz` returns 503 when the loop is stale.
 
+### Observability (`app/obs/`)
+
+- **Journal** — `get_journal().emit(kind, message, ...)` from anywhere (poller, placement,
+  sweeps, API audit); kinds are a closed set in `obs/kinds.py` (unknown kind raises).
+  Buffered, flushed to the `event` table every second and at the end of each tick phase,
+  then fanned out to SSE subscribers. **Journal changes, not repetitions** — per-call data
+  belongs in metrics, not events.
+- **Context** — `obs/context.bind(tick_id=..., tvdb_id=...)`; events, operations and log
+  lines pick the ids up implicitly.
+- **Ticks** — every reconciler pass is a `tick` row (`ok`/`degraded`/`failed`, per-phase
+  ms/errors). Health (`status()`, `/healthz`) is derived from it, so it survives restarts.
+- **Metrics** — hand-rolled registry in `obs/metrics.py` (no prometheus_client); never label
+  by tvdb id. `SonarrClient._request` is the single choke point for call metrics/stats.
+- **Monitor** (`services/monitor.py`) — always-on probe + Sonarr `/health` watch + daily
+  retention (`services/retention.py`).
+
 ## Frontend
 
 React + Vite + TanStack Query + react-router. `src/api.js` is the single same-origin `/api`
@@ -124,9 +140,11 @@ substring match. Pages in `src/pages/`, dialogs/shared in `src/components/`.
 
 Tests mock Sonarr HTTP with `respx` and inject a fixture registry by overriding the dependency:
 `app.dependency_overrides[get_registry] = make_registry` (see `tests/test_api.py`; also `get_db`,
-`get_reconciler`). There is no conftest — shared helpers (`make_registry`, base URLs `A`=1080p /
-`B`=4k, `_nosleep`) live in `tests/test_chain.py`. Persistence tests use a real
-`Database(str(tmp_path / "relay.db"))`. The reconciler is driven deterministically with
+`get_reconciler`). `tests/conftest.py` provides `db` (tmp SQLite) and `journal` (a real journal
+installed process-wide) fixtures and resets the global journal after every test; Sonarr helpers
+(`make_registry`, base URLs `A`=1080p / `B`=4k, `_nosleep`) live in `tests/test_chain.py`.
+Persistence tests use a real `Database(str(tmp_path / "relay.db"))`. The reconciler is
+driven deterministically with
 `Reconciler(..., clock=lambda: NOW, sleep=_nosleep)` and direct `tick()` / `reconcile_series()`
 calls. When exercising orchestration timing, pass a fake `sleep` and small `wait_attempts`
 instead of real delays.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -15,8 +16,10 @@ from starlette.staticfiles import StaticFiles
 from app.api import adding, catalog, instances, observability, policy, settings
 from app.auth import verify_access
 from app.db import Database
+from app.obs.journal import Journal, set_journal
 from app.obs.logging import configure_logging
 from app.reconciler import Reconciler
+from app.services.monitor import Monitor
 from app.state import build_registry, data_path, get_reconciler
 from app.store import settings as settings_store
 from app.store.operations import OperationStore
@@ -61,7 +64,9 @@ async def lifespan(app: FastAPI):
             f"Relay failed to start — {exc}. Check config.yaml and that the "
             f"referenced API-key env vars (e.g. SONARR_*_API_KEY) are set in .env."
         ) from exc
-    app.state.db = Database(data_path())
+    app.state.db = Database(data_path())  # also marks ticks interrupted by a crash
+    app.state.journal = Journal(app.state.db)
+    set_journal(app.state.journal)
     app.state.operations = OperationStore(app.state.db)
     # Apply any UI-saved fallback-chain override on top of config.yaml.
     try:
@@ -71,24 +76,40 @@ async def lifespan(app: FastAPI):
             logging.getLogger("app").info("applied fallback-chain override from DB")
     except Exception:  # noqa: BLE001 - a bad override must not block startup
         logging.getLogger("app").exception("failed to apply fallback-chain override")
+    # The monitor observes even when automation is off.
+    app.state.monitor = Monitor(app.state.registry, app.state.db)
     app.state.reconciler = Reconciler(
         app.state.registry, app.state.db, app.state.operations,
         enabled=enabled, stalled_cleanup=_stalled_cleanup_enabled(),
         dangerous_cleanup=_dangerous_cleanup_enabled(),
         search_stall_cleanup=_search_stall_cleanup_enabled(),
+        monitor=app.state.monitor,
     )
-    task = None
+    journal_task = asyncio.create_task(app.state.journal.run())
+    monitor_task = asyncio.create_task(app.state.monitor.run())
+    reconciler_task = None
     if enabled:
-        task = asyncio.create_task(app.state.reconciler.run())
+        reconciler_task = asyncio.create_task(app.state.reconciler.run())
     else:
         logging.getLogger("app").info("reconciler disabled (RECONCILER_ENABLED=false)")
     try:
         yield
     finally:
-        if task is not None:
+        if reconciler_task is not None:
             app.state.reconciler.stop()
-            await task
+            await reconciler_task
+        # A probe may be mid-request (up to the client timeout): cancel, don't wait.
+        monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor_task
+        await app.state.journal.aclose()   # final flush
+        await journal_task
+        set_journal(None)
+        await app.state.registry.aclose()
         app.state.db.close()
+        # Don't leave closed resources on the module-level app for later requests.
+        app.state.journal = None
+        app.state.monitor = None
 
 
 # Cf-Access verification is a no-op unless CF_ACCESS_ENABLED=true (see auth.py).

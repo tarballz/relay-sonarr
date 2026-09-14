@@ -63,8 +63,30 @@ So a host/LAN request can't bypass Access by hitting `:8088` directly:
 - **`GET /api/reconciler/status`** (and the **System health** card on the Operations
   page) report last-tick time, duration, actions, `consecutiveFailures`, and the last
   error. Watch this to confirm the loop is doing its job.
+- **`GET /metrics`** — Prometheus text format (tick counts/durations, Sonarr call
+  latency and outcomes per instance, `relay_sonarr_up`, placement states, sweep
+  removals, journal volume). Exempt from Cloudflare Access; set `METRICS_TOKEN` to
+  require a bearer token. Example scrape job and a staleness alert:
+
+  ```yaml
+  scrape_configs:
+    - job_name: relay
+      static_configs: [{ targets: ["192.168.1.50:8088"] }]
+      # authorization: { credentials: "<METRICS_TOKEN>" }
+  # alert: time() - relay_last_tick_timestamp_seconds > 3600
+  ```
+- **Event journal** — `GET /api/events?kind=&level=&tvdb=&tick=` (newest first, page with
+  `before=`), `GET /api/ticks` / `GET /api/ticks/{id}` (per-phase timings and the tick's
+  events), `GET /api/summary`, and a live `GET /api/events/stream` (SSE; 15s `: ping`
+  heartbeats — `curl -N` through the tunnel should show pings every ~15s, not in bursts).
+  Ticks are `ok`, `degraded` (a sweep failed or a Sonarr was unreachable) or `failed`.
+- **Instance monitor** — probes each Sonarr every 60s and reads its own `/health` checks
+  every ~5 min (indexer outages show up here), even with `RECONCILER_ENABLED=false`.
+- **Retention** — events are kept 3d (debug) / 30d (info) / 90d (warn, error), ticks 90d,
+  operations 60d; pruned once a day.
 - Logs go to stdout — `docker compose logs -f sonarr-unified`. Set `LOG_LEVEL=DEBUG`
-  in `.env` for more detail.
+  in `.env` for per-request detail, `LOG_FORMAT=json` for structured lines. Lines
+  inside a tick carry `[tick=N tvdb=M]`.
 - If the app exits at startup with *"Relay failed to start — Missing environment
   variable…"*, a referenced `SONARR_*_API_KEY` (or config field) is unset in `.env`.
 
