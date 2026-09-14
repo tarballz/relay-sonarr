@@ -54,6 +54,9 @@ def build_add_payload(
         "qualityProfileId": quality_profile_id,
         "rootFolderPath": root_folder_path,
         "monitored": monitored,
+        # Sonarr's API defaults this to false when omitted (and lookups can carry
+        # false), which would dump episodes flat instead of into "Season N" folders.
+        "seasonFolder": True,
         "addOptions": {"searchForMissingEpisodes": search_now},
     }
     if monitored_seasons is not None:
