@@ -34,6 +34,11 @@ from app.store import settings as settings_store
 
 DEFAULT_TTL = 6 * 3600  # seconds
 
+# A verdict of "0 releases" is cheap to be wrong about (indexer flap, or the
+# release just hasn't shown up yet) — recheck it much sooner than a stable
+# "releases exist but none qualify" verdict, as long as the episode has aired.
+EMPTY_RELEASE_TTL = 45 * 60  # seconds
+
 # Episode states owned by the download lifecycle (poller/reconciler), which
 # compute_plan must preserve rather than recompute from file/availability.
 IN_PROGRESS = {"searching", "grabbed", "importing", "failed"}
@@ -67,6 +72,20 @@ def _infer_desired(registry: Registry, present: list[str]) -> str | None:
     return present[0] if present else None
 
 
+def _has_aired(ep: dict, now: datetime) -> bool:
+    """True only if ``airDateUtc`` parses and is not in the future. Missing or
+    unparseable dates return False — conservative, so an unknown air date keeps
+    the long TTL rather than being treated as a fresh-search candidate."""
+    raw = ep.get("airDateUtc")
+    if not raw:
+        return False
+    try:
+        aired = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return aired <= now
+
+
 async def _episodes_for_tvdb(client, tvdb_id: int):
     series = await find_series_by_tvdb(client, tvdb_id)
     if series is None:
@@ -82,6 +101,7 @@ async def refresh_availability(
     instance_id: str,
     episodes: list[dict] | None = None,
     ttl: float = DEFAULT_TTL,
+    empty_ttl: float = EMPTY_RELEASE_TTL,
     concurrency: int = 4,
     limit: int | None = None,
     now: datetime | None = None,
@@ -107,11 +127,19 @@ async def refresh_availability(
     async def check(ep: dict):
         season, epnum = episode_key(ep)
         cached = await avail_cache.get_cached(db, instance_id, tvdb_id, season, epnum)
+        # A zero-release verdict on an aired episode is cheap to be wrong about
+        # (outage, or the release just landed) — trust it for a much shorter
+        # window than a stable "releases exist but none qualify" verdict.
+        effective_ttl = (
+            empty_ttl
+            if cached is not None and cached["total_releases"] == 0 and _has_aired(ep, now)
+            else ttl
+        )
         # A verdict computed under a different seeder threshold is stale even
         # within TTL — flipping the knob takes effect on the next sweep.
         if (
             cached is not None
-            and avail_cache.is_fresh(cached["checked_at"], now, ttl)
+            and avail_cache.is_fresh(cached["checked_at"], now, effective_ttl)
             and cached["min_seeders"] == min_seeders
         ):
             results.append({

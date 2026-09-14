@@ -8,6 +8,7 @@ import respx
 from app.db import Database
 from app.policy import SeriesPolicy
 from app.reconciler import Reconciler
+from app.store import availability as avail_cache
 from app.store import intents as intent_store
 from app.store import placements as place_store
 from app.store import settings as settings_store
@@ -91,6 +92,40 @@ async def test_reconcile_searches_desired_and_fills_fallback(tmp_path):
     # A reconciler operation was recorded.
     op = (await ops.recent())[0]
     assert op["source"] == "reconciler" and op["kind"] == "reconcile"
+
+
+@respx.mock
+async def test_reconcile_honors_configured_empty_release_ttl(tmp_path):
+    """A cached '0 releases' verdict on an aired episode should be re-checked
+    once it's older than the settings-configured emptyReleaseTtlMinutes, not
+    just the flat 6h availability TTL."""
+    reg, db, ops, rec = _make(tmp_path)
+    respx.get(f"{B}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "Mad Men"}])
+    )
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 1001, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True},
+        {"id": 1002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False,
+         "airDateUtc": "2026-05-01T00:00:00Z"},
+    ]))
+    route = respx.get(f"{B}/api/v3/release", params={"episodeId": "1002"}).mock(
+        return_value=httpx.Response(200, json=[{"rejected": False}])
+    )
+    respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+
+    await settings_store.set_defaults(db, {"emptyReleaseTtlMinutes": 10, "minSeeders": 0})
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=TVDB, season=1, episode=2,
+        qualifies=False, total_releases=0, qualifying_count=0,
+        rejection_json="[]", checked_at=(NOW - timedelta(minutes=15)).isoformat(), min_seeders=0,
+    )
+
+    await rec.reconcile_series({"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men"})
+
+    # 15 minutes old is stale against the configured 10-minute empty TTL, even
+    # though it's well within the flat 6h availability TTL.
+    assert route.call_count == 1
 
 
 def _mock_4k_with_grabbable_e3(seeders=40):

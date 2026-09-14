@@ -1,5 +1,5 @@
 """Episode-level availability + placement engine."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import respx
@@ -201,6 +201,125 @@ async def test_refresh_availability_no_torrent_candidate_caches_null(tmp_path):
 
     cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
     assert cached["best_release_json"] is None
+
+
+# --- short-TTL zero-release verdicts (aired gaps with no releases yet) -------
+
+def _mock_gap_with_airdate(air_date_iso: str | None):
+    """4k (B) has one gap: S1E2, monitored, no file, with the given airDateUtc."""
+    respx.get(f"{B}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "X"}])
+    )
+    ep = {"id": 1002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False}
+    if air_date_iso is not None:
+        ep["airDateUtc"] = air_date_iso
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[ep]))
+
+
+async def _seed_empty_cache(db, *, checked_at: str):
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=TVDB, season=1, episode=2,
+        qualifies=False, total_releases=0, qualifying_count=0,
+        rejection_json="[]", checked_at=checked_at, min_seeders=0,
+    )
+
+
+def test_has_aired_past_true_future_false_missing_false():
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    assert placement._has_aired({"airDateUtc": "2026-08-13T04:00:00Z"}, now) is True
+    assert placement._has_aired({"airDateUtc": "2026-09-20T04:00:00Z"}, now) is False
+    assert placement._has_aired({}, now) is False
+    assert placement._has_aired({"airDateUtc": "not-a-date"}, now) is False
+
+
+@respx.mock
+async def test_refresh_availability_rechecks_stale_empty_verdict_for_old_aired_gap(tmp_path):
+    # Aired 60 days ago — well outside any "recently aired" window, but it HAS
+    # aired, so a 0-release verdict should still be treated as cheap-to-recheck.
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=50)
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[{"rejected": False}])
+    )
+    db = _db(tmp_path)
+    await _seed_empty_cache(db, checked_at=checked_at.isoformat())
+
+    rows = await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 1  # re-checked despite being within the flat 6h TTL
+    assert rows[0]["qualifies"] is True
+
+
+@respx.mock
+async def test_refresh_availability_keeps_long_ttl_when_releases_exist_but_rejected(tmp_path):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=50)
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[{"rejected": False}])
+    )
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    # Non-empty verdict (total_releases > 0) is a stable "no" — long TTL applies.
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=TVDB, season=1, episode=2,
+        qualifies=False, total_releases=1, qualifying_count=0,
+        rejection_json="[]", checked_at=checked_at.isoformat(), min_seeders=0,
+    )
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0  # still fresh under the 6h TTL
+
+
+@respx.mock
+async def test_refresh_availability_keeps_long_ttl_for_unaired_gap(tmp_path):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=50)
+    _mock_gap_with_airdate("2026-09-20T04:00:00Z")  # airs next week
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    db = _db(tmp_path)
+    await _seed_empty_cache(db, checked_at=checked_at.isoformat())
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0  # unaired: 0 releases is expected, don't hammer
+
+
+@respx.mock
+async def test_refresh_availability_keeps_long_ttl_when_airdate_missing(tmp_path):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=50)
+    _mock_gap_with_airdate(None)
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    db = _db(tmp_path)
+    await _seed_empty_cache(db, checked_at=checked_at.isoformat())
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0  # unknown airdate: conservative, keep long TTL
+
+
+@respx.mock
+async def test_refresh_availability_empty_verdict_still_fresh_within_short_ttl(tmp_path):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=10)  # < 45min empty_ttl
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    db = _db(tmp_path)
+    await _seed_empty_cache(db, checked_at=checked_at.isoformat())
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0  # too recent even for the short TTL
 
 
 @respx.mock

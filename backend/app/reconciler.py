@@ -224,7 +224,9 @@ class Reconciler:
         try:
             await placement.refresh_availability(
                 self.registry, self.db, tvdb_id=tvdb, instance_id=desired,
-                ttl=self._ttl, now=now,
+                ttl=self._ttl,
+                empty_ttl=defaults.get("emptyReleaseTtlMinutes", 45) * 60,
+                now=now,
             )
         except KeyError:
             pass
