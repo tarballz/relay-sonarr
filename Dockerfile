@@ -10,12 +10,11 @@ RUN npm run build
 FROM python:3.11-slim AS runtime
 WORKDIR /app
 
-# Install backend deps first for layer caching.
+# Install backend deps first for layer caching. pyproject.toml is the single
+# source of truth: read its dependency list rather than repeating it here.
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir \
-    "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" \
-    "pydantic>=2.7" "pydantic-settings>=2.3" "pyyaml>=6.0" \
-    "python-jose[cryptography]>=3.3"
+RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > /tmp/requirements.txt \
+    && pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY backend/ ./
 # Drop the built SPA where main.py expects it (app/static).

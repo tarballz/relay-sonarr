@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     ports:
       - "8088:8000"
+    # Everything in .env reaches the container, so optional knobs
+    # (RECONCILER_ENABLED, *_CLEANUP_ENABLED, LOG_LEVEL, ...) can be set there
+    # without editing this file. The entries below only supply defaults.
+    env_file: .env
     environment:
       - SONARR_1080P_API_KEY=${SONARR_1080P_API_KEY}
       - SONARR_4K_API_KEY=${SONARR_4K_API_KEY}
@@ -21,6 +25,12 @@ services:
     # Tune up if your library is large.
     mem_limit: 512m
     cpus: 1.0
+    # Bound container logs (the default json-file driver never rotates).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     # Mirror the image HEALTHCHECK at the compose layer so `docker compose ps`
     # and dependent services see health state too.
     healthcheck:
