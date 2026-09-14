@@ -1,4 +1,5 @@
 """Episode-level availability + placement engine."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -434,6 +435,35 @@ def test_plan_endpoint_returns_plan(tmp_path):
         body = resp.json()
         assert body["desiredTier"] == "4k"
         assert body["counts"]["imported"] == 1
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_registry, None)
+
+
+@respx.mock
+def test_plan_refresh_honors_configured_empty_release_ttl(tmp_path):
+    """?refresh= applies emptyReleaseTtlMinutes exactly like the reconciler: a
+    15-minute-old zero-release verdict is stale under a 10-minute setting, even
+    though it would still be fresh under the 45-minute default."""
+    db = _db(tmp_path)
+    checked_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+
+    async def seed():
+        await _seed_empty_cache(db, checked_at=checked_at.isoformat())
+        await settings_store.set_defaults(db, {"minSeeders": 0, "emptyReleaseTtlMinutes": 10})
+
+    asyncio.run(seed())
+    _mock_gap_with_airdate("2000-01-01T00:00:00Z")
+    respx.get(f"{A}/api/v3/series").mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(f"{B}/api/v3/release").mock(
+        return_value=httpx.Response(200, json=[{"rejected": False}])
+    )
+    app.dependency_overrides[get_registry] = make_registry
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        resp = TestClient(app).get(f"/api/series/{TVDB}/plan?refresh=4k")
+        assert resp.status_code == 200
+        assert route.call_count == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_registry, None)

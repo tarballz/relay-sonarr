@@ -8,6 +8,7 @@ from app.services import queue as queue_service
 from app.sonarr.registry import Registry
 from app.state import get_db, get_reconciler, get_registry
 from app.store import intents as intent_store
+from app.store import settings as settings_store
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -120,10 +121,14 @@ async def series_plan(
             targets = plan["tierPriority"]
         else:
             targets = [refresh]
+        # Same zero-release TTL knob the reconciler uses, so a manual refresh and
+        # the loop agree on when a "0 releases" verdict is stale.
+        defaults = await settings_store.get_defaults(db)
+        empty_ttl = defaults.get("emptyReleaseTtlMinutes", 45) * 60
         for instance_id in targets:
             try:
                 await placement.refresh_availability(
-                    reg, db, tvdb_id=tvdb_id, instance_id=instance_id
+                    reg, db, tvdb_id=tvdb_id, instance_id=instance_id, empty_ttl=empty_ttl,
                 )
             except KeyError:
                 raise HTTPException(status_code=404, detail=f"Unknown instance: {instance_id}")
