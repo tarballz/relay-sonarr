@@ -97,9 +97,49 @@ CREATE TABLE IF NOT EXISTS download_progress (
   unchanged_since TEXT
 );
 
+-- One row per reconciler tick: persisted health history (survives restarts).
+CREATE TABLE IF NOT EXISTS tick (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger      TEXT NOT NULL,
+  started_at   TEXT NOT NULL,
+  finished_at  TEXT,
+  duration_ms  INTEGER,
+  status       TEXT NOT NULL DEFAULT 'running',
+  series_count INTEGER NOT NULL DEFAULT 0,
+  actions      INTEGER NOT NULL DEFAULT 0,
+  transitions  INTEGER NOT NULL DEFAULT 0,
+  swept        INTEGER NOT NULL DEFAULT 0,
+  errors       INTEGER NOT NULL DEFAULT 0,
+  error        TEXT,
+  phases_json  TEXT
+);
+
+-- Append-only journal of what Relay observed and did (see app/obs/kinds.py).
+CREATE TABLE IF NOT EXISTS event (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts           TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  level        TEXT NOT NULL DEFAULT 'info',
+  source       TEXT NOT NULL DEFAULT 'system',
+  tick_id      INTEGER,
+  operation_id INTEGER,
+  tvdb_id      INTEGER,
+  season       INTEGER,
+  episode      INTEGER,
+  instance_id  TEXT,
+  message      TEXT NOT NULL,
+  data_json    TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_step_op   ON operation_step(operation_id, seq);
 CREATE INDEX IF NOT EXISTS idx_op_id     ON operation(id DESC);
 CREATE INDEX IF NOT EXISTS idx_place_tvdb ON placement(tvdb_id);
+CREATE INDEX IF NOT EXISTS idx_tick_started ON tick(started_at);
+CREATE INDEX IF NOT EXISTS idx_event_ts    ON event(ts);
+CREATE INDEX IF NOT EXISTS idx_event_tvdb  ON event(tvdb_id, id);
+CREATE INDEX IF NOT EXISTS idx_event_tick  ON event(tick_id);
+CREATE INDEX IF NOT EXISTS idx_event_kind  ON event(kind, id);
+CREATE INDEX IF NOT EXISTS idx_event_level ON event(level, id);
 """
 
 
@@ -120,6 +160,11 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(SCHEMA)
             self._migrate()
+            # A tick still 'running' at open means the process died mid-tick.
+            self._conn.execute(
+                "UPDATE tick SET status='failed', error='interrupted (restart)', "
+                "finished_at=COALESCE(finished_at, started_at) WHERE status='running'"
+            )
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -149,6 +194,8 @@ class Database:
             "UPDATE operation SET tvdb_id=NULL "
             "WHERE kind IN ('stalled-cleanup', 'dangerous-cleanup')",
         )
+        # Correlates an operation with the reconciler tick that started it.
+        self._ensure_column("operation", "tick_id", "INTEGER")
 
     def _run_once(self, key: str, sql: str) -> None:
         """Apply a one-time data repair, remembered in ``meta`` so it never re-runs
@@ -184,6 +231,22 @@ class Database:
             conn.executemany(sql, seq_of_params)
             conn.commit()
         await self._run(fn)
+
+    async def execute_batch(self, sql: str, rows: list[tuple]) -> list[int]:
+        """One INSERT per row inside a single transaction; returns each row id."""
+        def fn(conn):
+            ids = [conn.execute(sql, row).lastrowid for row in rows]
+            conn.commit()
+            return ids
+        return await self._run(fn)
+
+    async def execute_count(self, sql: str, params: tuple = ()) -> int:
+        """Run a write; returns the number of rows it changed."""
+        def fn(conn):
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+        return await self._run(fn)
 
     async def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return await self._run(lambda conn: conn.execute(sql, params).fetchall())

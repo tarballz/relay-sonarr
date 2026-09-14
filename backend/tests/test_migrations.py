@@ -38,3 +38,27 @@ def test_sweep_tvdb_repair_nulls_sonarr_series_ids_once(tmp_path):
     db = Database(path)
     assert _tvdb_by_kind(db) == {"stalled-cleanup": 77}
     db.close()
+
+
+def test_ticks_left_running_are_marked_interrupted_on_open(tmp_path):
+    path = str(tmp_path / "relay.db")
+    db = Database(path)
+    db._conn.execute(
+        "INSERT INTO tick(trigger, started_at, status) VALUES('schedule', '2026-09-14T00:00:00+00:00', 'running')"
+    )
+    db._conn.commit()
+    db.close()
+
+    db = Database(path)
+    row = db._conn.execute("SELECT status, error, finished_at FROM tick").fetchone()
+    assert row["status"] == "failed"
+    assert row["error"] == "interrupted (restart)"
+    assert row["finished_at"] == "2026-09-14T00:00:00+00:00"
+    db.close()
+
+
+def test_operation_has_tick_id_column(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    cols = {r["name"] for r in db._conn.execute("PRAGMA table_info(operation)")}
+    assert "tick_id" in cols
+    db.close()
