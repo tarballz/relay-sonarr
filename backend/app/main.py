@@ -15,6 +15,7 @@ from starlette.staticfiles import StaticFiles
 from app.api import adding, catalog, instances, policy, settings
 from app.auth import verify_access
 from app.db import Database
+from app.obs.logging import configure_logging
 from app.reconciler import Reconciler
 from app.state import build_registry, data_path, get_reconciler
 from app.store import settings as settings_store
@@ -40,10 +41,9 @@ def _search_stall_cleanup_enabled() -> bool:
 
 
 def _configure_logging() -> None:
-    level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    configure_logging(
+        os.environ.get("LOG_LEVEL", "INFO"),
+        os.environ.get("LOG_FORMAT", "text"),
     )
 
 
