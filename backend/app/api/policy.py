@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.auth import verify_access
 from app.episodes import find_series_by_tvdb
+from app.obs import audit, kinds
 from app.policy import SeriesPolicy, effective_policy, policy_from_chain
 from app.sonarr.registry import Registry
 from app.state import get_db, get_reconciler, get_registry
@@ -66,11 +68,17 @@ async def get_policy(tvdb_id: int, reg: Registry = Depends(get_registry), db=Dep
 
 
 @router.put("/series/{tvdb_id}/policy")
-async def put_policy(tvdb_id: int, policy: SeriesPolicy, db=Depends(get_db)):
+async def put_policy(tvdb_id: int, policy: SeriesPolicy, db=Depends(get_db),
+                     actor: str | None = Depends(verify_access)):
     now = _now()
+    existing = await intent_store.get(db, tvdb_id)
+    before = json.loads(existing["policy_json"]) if existing and existing["policy_json"] else None
     await intent_store.ensure(db, tvdb_id=tvdb_id, title=None,
                               chain_key=policy.preferredTier, now=now)
     await intent_store.set_policy(db, tvdb_id, policy.to_json(), now)
+    title = (existing["title"] if existing else None) or f"tvdb:{tvdb_id}"
+    audit.record(kinds.CONFIG_POLICY_CHANGED, f"Policy updated for {title}", actor=actor,
+                 tvdb_id=tvdb_id, before=before, after=json.loads(policy.to_json()))
     return {"ok": True, "tvdbId": tvdb_id}
 
 
@@ -84,16 +92,24 @@ async def _ensure_intent(reg: Registry, db, tvdb_id: int) -> None:
 
 
 @router.post("/series/{tvdb_id}/pause")
-async def pause(tvdb_id: int, reg: Registry = Depends(get_registry), db=Depends(get_db)):
+async def pause(tvdb_id: int, reg: Registry = Depends(get_registry), db=Depends(get_db),
+                actor: str | None = Depends(verify_access)):
     await _ensure_intent(reg, db, tvdb_id)
     await intent_store.set_paused(db, tvdb_id, True, _now())
+    intent = await intent_store.get(db, tvdb_id)
+    audit.record(kinds.SERIES_PAUSED, f"Paused {intent['title'] or f'tvdb:{tvdb_id}'}",
+                 actor=actor, tvdb_id=tvdb_id)
     return {"ok": True, "tvdbId": tvdb_id, "paused": True}
 
 
 @router.post("/series/{tvdb_id}/resume")
-async def resume(tvdb_id: int, reg: Registry = Depends(get_registry), db=Depends(get_db)):
+async def resume(tvdb_id: int, reg: Registry = Depends(get_registry), db=Depends(get_db),
+                 actor: str | None = Depends(verify_access)):
     await _ensure_intent(reg, db, tvdb_id)
     await intent_store.set_paused(db, tvdb_id, False, _now())
+    intent = await intent_store.get(db, tvdb_id)
+    audit.record(kinds.SERIES_RESUMED, f"Resumed {intent['title'] or f'tvdb:{tvdb_id}'}",
+                 actor=actor, tvdb_id=tvdb_id)
     return {"ok": True, "tvdbId": tvdb_id, "paused": False}
 
 
@@ -103,6 +119,12 @@ async def get_defaults(db=Depends(get_db)):
 
 
 @router.put("/settings/defaults")
-async def put_defaults(defaults: dict, db=Depends(get_db)):
+async def put_defaults(defaults: dict, db=Depends(get_db),
+                       actor: str | None = Depends(verify_access)):
+    before = await settings_store.get_defaults(db)
     await settings_store.set_defaults(db, defaults)
+    changed = sorted(k for k in set(before) | set(defaults) if before.get(k) != defaults.get(k))
+    audit.record(kinds.CONFIG_DEFAULTS_CHANGED,
+                 f"Default settings updated: {', '.join(changed) or 'no changes'}",
+                 actor=actor, before=before, after=defaults, changed=changed)
     return {"ok": True}

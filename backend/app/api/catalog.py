@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.auth import verify_access
+from app.obs import audit, kinds
 from app.reconciler import TickBusy
 from app.services import library, placement, poller, status as status_service
 from app.services import queue as queue_service
@@ -146,11 +148,23 @@ async def remove_series(
     series_id: int,
     deleteFiles: bool = False,
     reg: Registry = Depends(get_registry),
+    actor: str | None = Depends(verify_access),
 ):
     """Remove a series from an instance. Files are kept unless deleteFiles=true."""
     try:
         inst = reg.get(instance_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown instance: {instance_id}")
+    try:
+        series = await inst.client.get_series(series_id)  # for the audit record only
+    except Exception:  # noqa: BLE001 - bookkeeping must never block the removal
+        series = {}
     await inst.client.delete_series(series_id, delete_files=deleteFiles)
+    title = series.get("title") or f"series {series_id}"
+    audit.record(
+        kinds.SERIES_REMOVED,
+        f"Removed {title} from {instance_id}" + (" (files deleted)" if deleteFiles else ""),
+        actor=actor, level="warn", tvdb_id=series.get("tvdbId"), instance_id=instance_id,
+        seriesId=series_id, deleteFiles=deleteFiles, title=series.get("title"),
+    )
     return {"ok": True, "instanceId": instance_id, "seriesId": series_id}
