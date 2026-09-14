@@ -1,8 +1,11 @@
 """Cheap DB roll-ups shared by the overview endpoint and the Prometheus gauges."""
 from __future__ import annotations
 
-from app.obs.metrics import PLACEMENT_EPISODES, SERIES_INTENTS
+from datetime import datetime
+
+from app.obs.metrics import LAST_TICK_TS, PLACEMENT_EPISODES, SERIES_INTENTS
 from app.services import status as status_service
+from app.store import ticks as tick_store
 
 
 async def placement_counts(db) -> dict[str, int]:
@@ -34,3 +37,6 @@ async def refresh_gauges(db) -> None:
     SERIES_INTENTS.clear()
     SERIES_INTENTS.set(intents["active"], paused="false")
     SERIES_INTENTS.set(intents["paused"], paused="true")
+    last_tick = await tick_store.last_completed(db)
+    if last_tick is not None and last_tick["finishedAt"] is not None:
+        LAST_TICK_TS.set(datetime.fromisoformat(last_tick["finishedAt"]).timestamp())

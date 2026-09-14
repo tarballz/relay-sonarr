@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,6 +16,7 @@ from app.store import summary
 from app.store import ticks as tick_store
 
 router = APIRouter(tags=["observability"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/metrics", include_in_schema=False)
@@ -27,7 +29,13 @@ async def metrics(request: Request, db=Depends(get_db)):
         expected = f"Bearer {token}"
         if not hmac.compare_digest(provided.encode(), expected.encode()):
             raise HTTPException(status_code=401, detail="Invalid metrics token")
-    await summary.refresh_gauges(db)
+    try:
+        await summary.refresh_gauges(db)
+        reconciler = getattr(request.app.state, "reconciler", None)
+        if reconciler is not None:
+            await reconciler.status()
+    except Exception:  # noqa: BLE001 - a DB hiccup must not fail the whole scrape
+        logger.exception("failed to refresh DB-backed gauges for /metrics")
     return Response(METRICS.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 

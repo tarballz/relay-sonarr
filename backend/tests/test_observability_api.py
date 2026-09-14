@@ -1,5 +1,6 @@
 """Observability HTTP surface: metrics, events, ticks, operation detail, summary."""
 import asyncio
+from datetime import datetime
 
 import pytest
 from starlette.requests import Request
@@ -58,6 +59,50 @@ def test_metrics_token_required_when_configured(api, monkeypatch):
     assert api.get("/metrics").status_code == 401
     assert api.get("/metrics", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert api.get("/metrics", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_metrics_sets_last_tick_gauge_from_a_completed_tick_at_scrape_time(api, db):
+    finished_at = "2026-09-14T00:00:02+00:00"
+
+    async def seed():
+        tid = await tick_store.start(db, trigger="manual", started_at="2026-09-14T00:00:00+00:00")
+        await tick_store.finish(
+            db, tid, finished_at=finished_at, duration_ms=2000, status="ok",
+            series_count=0, actions=0, transitions=0, swept=0, errors=0, error=None, phases={},
+        )
+
+    _run(seed())
+    expected = datetime.fromisoformat(finished_at).timestamp()
+    r = api.get("/metrics")
+    assert r.status_code == 200
+    assert f"relay_last_tick_timestamp_seconds {expected:.0f}" in r.text
+
+
+def test_metrics_refreshes_reconciler_healthy_via_status(api):
+    calls = []
+
+    class FakeReconciler:
+        async def status(self):
+            calls.append(1)
+            return {}
+
+    app.state.reconciler = FakeReconciler()
+    try:
+        r = api.get("/metrics")
+    finally:
+        del app.state.reconciler
+    assert r.status_code == 200
+    assert calls == [1]
+
+
+def test_metrics_skips_a_failing_gauge_refresh_and_still_returns_200(api, monkeypatch):
+    async def boom(db):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr("app.api.observability.summary.refresh_gauges", boom)
+    r = api.get("/metrics")
+    assert r.status_code == 200
+    assert "# TYPE relay_tick_total counter" in r.text
 
 
 async def test_metrics_path_is_exempt_from_cloudflare_access(monkeypatch):
