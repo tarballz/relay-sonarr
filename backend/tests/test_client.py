@@ -126,6 +126,22 @@ async def test_releases_for_episode(client):
 
 
 @respx.mock
+async def test_release_search_gets_longer_timeout_than_plain_calls(client):
+    """An interactive release search waits on every indexer (some behind
+    FlareSolverr) and routinely takes ~60s — the default 30s timeout aborted it."""
+    releases = respx.get(f"{BASE}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    lookup = respx.get(f"{BASE}/api/v3/series/lookup").mock(return_value=httpx.Response(200, json=[]))
+
+    await client.releases(10)
+    await client.lookup("x")
+
+    release_timeout = releases.calls.last.request.extensions["timeout"]["read"]
+    assert release_timeout == SonarrClient.RELEASE_SEARCH_TIMEOUT
+    assert release_timeout >= 120
+    assert lookup.calls.last.request.extensions["timeout"]["read"] == 30.0
+
+
+@respx.mock
 async def test_add_series_posts_payload(client):
     route = respx.post(f"{BASE}/api/v3/series").mock(
         return_value=httpx.Response(201, json={"id": 7, "title": "Added"})

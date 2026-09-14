@@ -288,6 +288,43 @@ def test_smart_add_stream_emits_sse_and_records_operation(tmp_path):
 
 
 @respx.mock
+def test_smart_add_stream_timeout_reports_nonempty_error(tmp_path):
+    """httpx timeouts stringify to '' — the stream must still say what failed,
+    or the UI shows a blank toast and looks hung on 'Searching…'."""
+    import json as _json
+
+    store = make_store(tmp_path)
+    db = Database(":memory:")
+    app.dependency_overrides[get_registry] = make_registry
+    app.dependency_overrides[get_operations] = lambda: store
+    app.dependency_overrides[get_db] = lambda: db
+    c = TestClient(app)
+
+    respx.get(f"{B}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": 81189, "title": "BB"}])
+    )
+    respx.post(f"{B}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 7}))
+    respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get(f"{B}/api/v3/episode").mock(
+        return_value=httpx.Response(200, json=[{"id": 2, "monitored": True, "title": "E"}])
+    )
+    respx.get(f"{B}/api/v3/release").mock(side_effect=httpx.ReadTimeout(""))
+
+    resp = c.get("/api/smart-add/stream", params={
+        "tvdbId": 81189, "targetInstanceId": "4k", "targetQualityProfileId": 1,
+        "targetRootFolderPath": "/tv4k", "title": "BB",
+    })
+    assert resp.status_code == 200
+    frame = resp.text.split("event: error\ndata: ", 1)[1].split("\n", 1)[0]
+    message = _json.loads(frame)["message"]
+    assert "ReadTimeout" in message
+
+    ops = c.get("/api/operations").json()
+    assert "ReadTimeout" in ops[0]["error"]
+    app.dependency_overrides.pop(get_operations, None)
+
+
+@respx.mock
 def test_reattempt_stream_emits_sse_and_records_operation(tmp_path):
     store = make_store(tmp_path)
     db = Database(":memory:")

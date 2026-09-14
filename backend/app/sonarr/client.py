@@ -11,20 +11,24 @@ class SonarrClient:
     return parsed JSON. Auth is the per-instance ``X-Api-Key`` header.
     """
 
+    # An interactive release search blocks until every indexer answers (some sit
+    # behind FlareSolverr), which routinely exceeds the default timeout.
+    RELEASE_SEARCH_TIMEOUT = 180.0
+
     def __init__(self, base_url: str, api_key: str, *, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._timeout = timeout
 
-    def _client(self) -> httpx.AsyncClient:
+    def _client(self, timeout: float | None = None) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=f"{self.base_url}/api/v3",
             headers={"X-Api-Key": self.api_key},
-            timeout=self._timeout,
+            timeout=self._timeout if timeout is None else timeout,
         )
 
-    async def _get(self, path: str, params: dict | None = None):
-        async with self._client() as http:
+    async def _get(self, path: str, params: dict | None = None, *, timeout: float | None = None):
+        async with self._client(timeout) as http:
             resp = await http.get(path, params=params)
             resp.raise_for_status()
             return resp.json()
@@ -133,7 +137,9 @@ class SonarrClient:
 
     async def releases(self, episode_id: int) -> list[dict]:
         """Interactive release search for an episode (GET /release?episodeId=)."""
-        return await self._get("/release", {"episodeId": episode_id})
+        return await self._get(
+            "/release", {"episodeId": episode_id}, timeout=self.RELEASE_SEARCH_TIMEOUT
+        )
 
     async def grab_release(self, guid: str, indexer_id: int) -> dict:
         """Grab one specific release from an interactive search (POST /release)."""
