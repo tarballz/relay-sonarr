@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api", tags=["policy"])
 @router.get("/reconciler/status")
 async def reconciler_status(rec=Depends(get_reconciler)):
     """Liveness/observability snapshot of the autonomous loop (last tick, errors)."""
-    return rec.status()
+    return await rec.status()
 
 
 def _now() -> str:

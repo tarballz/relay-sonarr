@@ -350,7 +350,7 @@ async def test_run_once_records_success(tmp_path):
     out = await rec._run_once()
 
     assert out is not None
-    s = rec.status()
+    s = await rec.status()
     assert s["totalTicks"] == 1
     assert s["lastTickActions"] == 3          # 2 searched + 1 filled
     assert s["consecutiveFailures"] == 0
@@ -370,21 +370,21 @@ async def test_run_once_records_failure_without_propagating(tmp_path):
     out = await rec._run_once()  # must NOT raise
 
     assert out is None
-    s = rec.status()
+    s = await rec.status()
     assert s["consecutiveFailures"] == 1
     assert s["lastError"].startswith("ValueError")
     assert "kaboom" in s["lastError"]
 
 
-def test_is_healthy_grace_staleness_and_disabled(tmp_path):
+async def test_is_healthy_grace_staleness_and_disabled(tmp_path):
     reg, db, ops, rec = _make(tmp_path)  # clock fixed at NOW; started_at == NOW
     # Fresh (no tick yet) but within startup grace → healthy.
-    assert rec.is_healthy(NOW) is True
+    assert await rec.is_healthy(NOW) is True
     # Past interval*2 with no completed tick → stale → unhealthy.
-    assert rec.is_healthy(NOW + timedelta(seconds=rec.interval * 2 + 1)) is False
+    assert await rec.is_healthy(NOW + timedelta(seconds=rec.interval * 2 + 1)) is False
     # Disabled reconcilers are always "healthy" (nothing is supposed to run).
     rec.enabled = False
-    assert rec.is_healthy(NOW + timedelta(days=99)) is True
+    assert await rec.is_healthy(NOW + timedelta(days=99)) is True
 
 
 @respx.mock

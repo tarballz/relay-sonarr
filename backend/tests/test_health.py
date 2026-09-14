@@ -9,7 +9,7 @@ class FakeReconciler:
     def __init__(self, healthy: bool):
         self._healthy = healthy
 
-    def status(self) -> dict:
+    async def status(self) -> dict:
         return {
             "enabled": True,
             "healthy": self._healthy,
@@ -60,5 +60,29 @@ def test_reconciler_status_endpoint_shape():
         body = r.json()
         assert set(body) >= {"enabled", "healthy", "totalTicks", "lastTickActions"}
         assert body["totalTicks"] == 3
+    finally:
+        _teardown()
+
+
+from app.reconciler import TickBusy
+
+
+class ManualReconciler:
+    def __init__(self, busy: bool):
+        self.busy = busy
+
+    async def run_manual(self):
+        if self.busy:
+            raise TickBusy()
+        return {"tickId": 5, "status": "ok", "error": None, "reconciled": []}
+
+
+def test_manual_tick_endpoint_returns_result_or_409():
+    try:
+        app.dependency_overrides[get_reconciler] = lambda: ManualReconciler(busy=False)
+        r = TestClient(app).post("/api/reconcile/tick")
+        assert r.status_code == 200 and r.json()["tickId"] == 5
+        app.dependency_overrides[get_reconciler] = lambda: ManualReconciler(busy=True)
+        assert TestClient(app).post("/api/reconcile/tick").status_code == 409
     finally:
         _teardown()

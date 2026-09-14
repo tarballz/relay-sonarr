@@ -8,6 +8,9 @@ is recorded to the durable operation log (source='reconciler').
 
 Determinism for tests: ``clock`` and ``sleep`` are injected and ``tick()`` is a
 public single-shot entrypoint — the real ``run()`` loop is never used in tests.
+
+Observability: each pass is a persisted ``tick`` row with per-phase timings; its
+events carry the tick id through ``app.obs.context``.
 """
 from __future__ import annotations
 
@@ -15,8 +18,14 @@ import asyncio
 import json
 import logging
 import random
-from datetime import datetime, timezone
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
+from app.obs import context, kinds
+from app.obs.journal import get_journal
+from app.obs.metrics import LAST_TICK_TS, RECONCILER_HEALTHY, TICK_DURATION, TICK_TOTAL
+from app.obs.stats import TickStats
 from app.policy import effective_policy
 from app.services import orchestrate, placement, poller
 from app.services.library import combined_series
@@ -24,11 +33,16 @@ from app.store import availability as avail_cache
 from app.store import intents as intent_store
 from app.store import placements as place_store
 from app.store import settings as settings_store
+from app.store import ticks as tick_store
 
 logger = logging.getLogger(__name__)
 
 # States the reconciler will act on (vs in-flight states it leaves alone).
 ACTIONABLE = {"wanted", "unavailable", "failed"}
+
+
+class TickBusy(Exception):
+    """A reconciliation tick is already running."""
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -42,7 +56,7 @@ class Reconciler:
                  wait_delay: float = 1.5, enabled: bool = True,
                  stalled_cleanup: bool = True, stalled_cap: int = 25,
                  dangerous_cleanup: bool = True,
-                 search_stall_cleanup: bool = True):
+                 search_stall_cleanup: bool = True, monitor=None):
         self.registry = registry
         self.db = db
         self.ops = operations
@@ -55,20 +69,16 @@ class Reconciler:
         self._wait_delay = wait_delay
         self._stop = asyncio.Event()
         self._inflight: set[int] = set()  # single-flight per series (this process)
-        # ---- Health/observability (read via status()/is_healthy()) ----
         self.enabled = enabled
         self.stalled_cleanup = stalled_cleanup
         self._stalled_cap = stalled_cap
         self.dangerous_cleanup = dangerous_cleanup
         self.search_stall_cleanup = search_stall_cleanup
+        self._monitor = monitor
+        self._tick_lock = asyncio.Lock()   # one tick at a time: loop or manual
+        self._running = False
+        self._next_tick_at: datetime | None = None
         self._started_at = self.now()
-        self._last_tick_started_at: datetime | None = None
-        self._last_tick_finished_at: datetime | None = None
-        self._last_tick_duration_s: float | None = None
-        self._last_tick_actions = 0
-        self._last_error: str | None = None
-        self._consecutive_failures = 0
-        self._total_ticks = 0
 
     def now(self) -> datetime:
         return self._clock()
@@ -79,120 +89,237 @@ class Reconciler:
     async def run(self) -> None:
         """The long-running loop. Never lets an exception kill it; wakes early on stop."""
         logger.info("reconciler loop starting (interval=%ss)", self.interval)
+        get_journal().emit(
+            kinds.LOOP_STARTED, f"Reconciler loop started (every {self.interval / 60:g} min)",
+            source="reconciler", data={"intervalS": self.interval},
+        )
         while not self._stop.is_set():
-            await self._run_once()
+            await self._run_once("schedule")
             delay = self.interval + random.uniform(0, self.jitter)
+            self._next_tick_at = self.now() + timedelta(seconds=delay)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
+        self._next_tick_at = None
+        get_journal().emit(kinds.LOOP_STOPPED, "Reconciler loop stopped", source="reconciler")
         logger.info("reconciler loop stopped")
 
-    async def _run_once(self) -> dict | None:
-        """One guarded iteration: run a tick, record health, swallow+log failures.
+    async def _run_once(self, trigger: str = "schedule") -> dict | None:
+        """One guarded, serialized iteration. Returns the tick result, or None if
+        the tick raised. A bad tick never stops the loop — but it is recorded."""
+        async with self._tick_lock:
+            result = await self._run_tick(trigger)
+        return None if result["status"] == "failed" else result
 
-        Returns the tick result, or None if the tick raised. A bad tick must never
-        stop the loop — but it must be visible (logged + recorded), unlike before."""
+    async def run_manual(self) -> dict:
+        """'Run tick now' — refuses rather than queueing behind a running tick."""
+        if self._tick_lock.locked():
+            raise TickBusy()
+        async with self._tick_lock:
+            return await self._run_tick("manual")
+
+    async def _run_tick(self, trigger: str) -> dict:
         started = self.now()
-        self._last_tick_started_at = started
-        self._total_ticks += 1
-        try:
-            out = await self.tick()
-            finished = self.now()
-            self._last_tick_finished_at = finished
-            self._last_tick_duration_s = (finished - started).total_seconds()
-            self._last_tick_actions = sum(
-                r.get("searchedOnDesired", 0) + r.get("filled", 0)
-                for r in out.get("reconciled", [])
-            )
-            errs = [r for r in out.get("reconciled", []) if r.get("error")]
-            self._consecutive_failures = 0
-            self._last_error = None
-            logger.info(
-                "reconciler tick ok: %d series, %d action(s), %d error(s), %.2fs",
-                len(out.get("reconciled", [])), self._last_tick_actions,
-                len(errs), self._last_tick_duration_s,
-            )
-            for r in errs:
-                logger.warning("reconcile series %s failed: %s", r.get("tvdbId"), r.get("error"))
-            return out
-        except Exception as exc:  # noqa: BLE001 - a bad tick must not stop the loop
-            self._consecutive_failures += 1
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            logger.exception("reconciler tick failed")
-            return None
+        stats = TickStats()
+        tick_id = await tick_store.start(self.db, trigger=trigger, started_at=started.isoformat())
+        journal = get_journal()
+        out: dict = {"reconciled": []}
+        error: str | None = None
+        self._running = True
+        with context.bind(tick_id=tick_id, tick_stats=stats):
+            try:
+                out = await self.tick()
+            except Exception as exc:  # noqa: BLE001 - a bad tick must not stop the loop
+                error = f"{type(exc).__name__}: {exc}"
+                logger.exception("reconciler tick failed")
+            finally:
+                self._running = False
 
-    def is_healthy(self, now: datetime | None = None) -> bool:
-        """Healthy = disabled, or has completed a tick recently enough. A startup
-        grace (measured from start until the first tick) avoids a false alarm on a
-        freshly-booted app."""
+            finished = self.now()
+            duration_s = (finished - started).total_seconds()
+            reconciled = out.get("reconciled", [])
+            series_errors = [r for r in reconciled if r.get("error")]
+            actions = sum(r.get("searchedOnDesired", 0) + r.get("filled", 0) for r in reconciled)
+            if error:
+                status = "failed"
+            elif stats.errors or series_errors:
+                status = "degraded"
+            else:
+                status = "ok"
+
+            for instance_id, (zero, live) in stats.zero_spikes().items():
+                journal.emit(
+                    kinds.AVAILABILITY_ZERO_SPIKE,
+                    f"{zero} of {live} availability searches on {instance_id} returned no "
+                    f"releases — indexers may be down",
+                    level="warn", source="reconciler", instance_id=instance_id,
+                    data={"zero": zero, "live": live},
+                )
+
+            errors = stats.errors + len(series_errors) + (1 if error else 0)
+            await tick_store.finish(
+                self.db, tick_id, finished_at=finished.isoformat(),
+                duration_ms=int(duration_s * 1000), status=status,
+                series_count=len(reconciled), actions=actions,
+                transitions=stats.transitions, swept=stats.swept, errors=errors,
+                error=error, phases=stats.to_phases(),
+            )
+            TICK_TOTAL.inc(status=status)
+            TICK_DURATION.observe(duration_s)
+            LAST_TICK_TS.set(finished.timestamp())
+
+            if status == "failed":
+                journal.emit(kinds.TICK_FAILED, f"Tick #{tick_id} failed: {error}",
+                             level="error", source="reconciler",
+                             data={"trigger": trigger, "error": error})
+            else:
+                journal.emit(
+                    kinds.TICK_FINISHED,
+                    f"Tick #{tick_id} {status}: {len(reconciled)} series, {actions} action(s), "
+                    f"{stats.transitions} transition(s), {stats.swept} swept in {duration_s:.1f}s",
+                    level="info" if status == "ok" else "warn", source="reconciler",
+                    data={"trigger": trigger, "status": status, "actions": actions,
+                          "errors": errors},
+                )
+            await journal.flush()
+
+        logger.info("reconciler tick #%d %s: %d series, %d action(s), %d error(s), %.2fs",
+                    tick_id, status, len(reconciled), actions, errors, duration_s)
+        for r in series_errors:
+            logger.warning("reconcile series %s failed: %s", r.get("tvdbId"), r.get("error"))
+        return {"tickId": tick_id, "status": status, "error": error, **out}
+
+    async def _liveness_ref(self) -> tuple[datetime, dict | None]:
+        """Reference time for staleness: the later of the last completed tick and
+        process start. The process-start term is the startup grace, so a long
+        first tick after downtime doesn't trip the container healthcheck."""
+        last = await tick_store.last_completed(self.db)
+        ref = self._started_at
+        if last and last["finishedAt"]:
+            try:
+                ref = max(ref, datetime.fromisoformat(last["finishedAt"]))
+            except ValueError:
+                pass
+        return ref, last
+
+    async def is_healthy(self, now: datetime | None = None) -> bool:
+        """Healthy = disabled, or a tick completed (or the process started) recently.
+        A degraded tick counts as alive: partial failure is not a wedged loop."""
         if not self.enabled:
             return True
         now = now or self.now()
-        ref = self._last_tick_finished_at or self._started_at
+        ref, _last = await self._liveness_ref()
         return (now - ref).total_seconds() <= self.interval * 2
 
-    def status(self) -> dict:
+    async def status(self) -> dict:
         now = self.now()
-        ref = self._last_tick_finished_at or self._started_at
+        ref, last = await self._liveness_ref()
+        healthy = (not self.enabled) or (now - ref).total_seconds() <= self.interval * 2
+        RECONCILER_HEALTHY.set(1 if healthy else 0)
         return {
             "enabled": self.enabled,
-            "healthy": self.is_healthy(now),
+            "healthy": healthy,
             "startedAt": self._started_at.isoformat(),
-            "lastTickStartedAt": _iso(self._last_tick_started_at),
-            "lastTickFinishedAt": _iso(self._last_tick_finished_at),
-            "lastTickDurationS": self._last_tick_duration_s,
-            "lastTickActions": self._last_tick_actions,
+            "lastTickStartedAt": last["startedAt"] if last else None,
+            "lastTickFinishedAt": last["finishedAt"] if last else None,
+            "lastTickDurationS": (last["durationMs"] / 1000
+                                  if last and last["durationMs"] is not None else None),
+            "lastTickActions": last["actions"] if last else 0,
             "secondsSinceLastTick": (now - ref).total_seconds(),
-            "lastError": self._last_error,
-            "consecutiveFailures": self._consecutive_failures,
-            "totalTicks": self._total_ticks,
+            "lastError": last["error"] if last and last["status"] == "failed" else None,
+            "consecutiveFailures": await tick_store.consecutive_failures(self.db),
+            "totalTicks": await tick_store.count(self.db),
             "intervalS": self.interval,
+            "running": self._running,
+            "nextTickAt": _iso(self._next_tick_at),
+            "lastTick": last,
+            "instances": self._monitor.snapshot() if self._monitor is not None else [],
         }
 
+    @asynccontextmanager
+    async def _phase(self, stats: TickStats, name: str, *, swallow: bool = False):
+        """Time one tick phase into ``stats``. A ``swallow`` phase (the sweeps)
+        records and journals its failure but lets the tick continue."""
+        phase: dict = {}
+        started = time.perf_counter()
+        try:
+            yield phase
+        except Exception as exc:  # noqa: BLE001
+            phase["error"] = f"{type(exc).__name__}: {exc}"
+            stats.errors += 1
+            if not swallow:
+                raise
+            logger.exception("%s failed", name)
+            get_journal().emit(
+                kinds.SWEEP_FAILED, f"{name} failed: {phase['error']}", level="error",
+                source="sweep", data={"phase": name, "error": phase["error"]},
+            )
+        finally:
+            phase["ms"] = round((time.perf_counter() - started) * 1000)
+            stats.phases[name] = phase
+            await get_journal().flush()
+
     async def tick(self) -> dict:
-        """One reconciliation pass over all active intents."""
-        await poller.poll_all(self.registry, self.db, now=self.now())
+        """One reconciliation pass over all active intents, phase by phase."""
+        stats = context.tick_stats.get() or TickStats()
+        async with self._phase(stats, "poll") as phase:
+            polled = await poller.poll_all(self.registry, self.db, now=self.now())
+            phase["transitions"] = polled.get("transitionCount", 0)
+            stats.transitions += phase["transitions"]
+            failed = {i["instanceId"]: i["error"]
+                      for i in polled.get("instances", []) if i.get("error")}
+            if failed:
+                phase["errors"] = failed
+                stats.errors += len(failed)
+                for instance_id, message in failed.items():
+                    get_journal().emit(
+                        kinds.POLL_INSTANCE_ERROR, f"Polling {instance_id} failed: {message}",
+                        level="warn", source="poller", instance_id=instance_id,
+                        data={"error": message},
+                    )
+
+        defaults = await settings_store.get_defaults(self.db)
         if self.stalled_cleanup:
-            defaults = await settings_store.get_defaults(self.db)
-            try:
-                await poller.sweep_stalled(
+            async with self._phase(stats, "sweep_stalled", swallow=True) as phase:
+                phase["count"] = await poller.sweep_stalled(
                     self.registry, self.db, self.ops,
                     stalled_days=defaults.get("stalledDays", 3),
                     cap=self._stalled_cap, now=self.now(),
                 )
-            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
-                logger.exception("stalled sweep failed")
+                stats.swept += phase["count"]
         if self.dangerous_cleanup:
-            try:
-                await poller.sweep_dangerous(
-                    self.registry, self.db, self.ops,
-                    cap=self._stalled_cap, now=self.now(),
+            async with self._phase(stats, "sweep_dangerous", swallow=True) as phase:
+                phase["count"] = await poller.sweep_dangerous(
+                    self.registry, self.db, self.ops, cap=self._stalled_cap, now=self.now(),
                 )
-            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
-                logger.exception("dangerous sweep failed")
+                stats.swept += phase["count"]
         if self.search_stall_cleanup:
-            try:
-                defaults = await settings_store.get_defaults(self.db)
-                await poller.sweep_search_stalls(
+            async with self._phase(stats, "sweep_search_stall", swallow=True) as phase:
+                reverted = await poller.sweep_search_stalls(
                     self.db, stall_hours=defaults.get("searchStallHours", 6),
                     cap=self._stalled_cap, now=self.now(),
                 )
-            except Exception:  # noqa: BLE001 - sweep failure must not stop the tick
-                logger.exception("search-stall sweep failed")
-        await self._ensure_intents()
+                phase["count"] = len(reverted)
+                stats.swept += phase["count"]
+
         results = []
-        for intent in await intent_store.all_active(self.db):
-            tvdb = intent["tvdb_id"]
-            if tvdb in self._inflight:
-                continue
-            self._inflight.add(tvdb)
-            try:
-                results.append(await self.reconcile_series(dict(intent)))
-            except Exception as exc:  # noqa: BLE001
-                results.append({"tvdbId": tvdb, "error": str(exc)})
-            finally:
-                self._inflight.discard(tvdb)
+        async with self._phase(stats, "reconcile") as phase:
+            await self._ensure_intents()
+            for intent in await intent_store.all_active(self.db):
+                tvdb = intent["tvdb_id"]
+                if tvdb in self._inflight:
+                    continue
+                self._inflight.add(tvdb)
+                try:
+                    with context.bind(tvdb_id=tvdb):
+                        results.append(await self.reconcile_series(dict(intent)))
+                except Exception as exc:  # noqa: BLE001
+                    results.append({"tvdbId": tvdb, "error": str(exc)})
+                finally:
+                    self._inflight.discard(tvdb)
+            phase["series"] = len(results)
+            phase["errors"] = sum(1 for r in results if r.get("error"))
         return {"reconciled": results}
 
     async def _ensure_intents(self) -> None:

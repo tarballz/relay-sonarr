@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.reconciler import TickBusy
 from app.services import library, placement, poller, status as status_service
 from app.services import queue as queue_service
 from app.sonarr.registry import Registry
@@ -53,8 +54,12 @@ async def library_status(db=Depends(get_db)):
 
 @router.post("/reconcile/tick")
 async def reconcile_tick(reconciler=Depends(get_reconciler)):
-    """Run one reconciliation pass now (the background loop runs it on a schedule)."""
-    return await reconciler.tick()
+    """Run one reconciliation pass now (the background loop runs it on a schedule).
+    409 if a tick is already in progress."""
+    try:
+        return await reconciler.run_manual()
+    except TickBusy:
+        raise HTTPException(status_code=409, detail="A reconciliation tick is already running")
 
 
 @router.post("/series/{tvdb_id}/reconcile")

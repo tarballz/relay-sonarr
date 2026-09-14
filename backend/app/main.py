@@ -103,7 +103,7 @@ for module in (instances, catalog, adding, settings, policy):
 async def healthz(response: Response, rec=Depends(get_reconciler)):
     """Liveness probe: 503 when the autonomous loop is enabled but has gone stale,
     so Docker/orchestrators can detect a wedged reconciler (not just a live port)."""
-    status = rec.status()
+    status = await rec.status()
     if not status["healthy"]:
         response.status_code = 503
     return status
