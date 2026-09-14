@@ -3,6 +3,11 @@ services:
     build: .
     container_name: sonarr-unified
     restart: unless-stopped
+    # Compose sends SIGTERM then waits this long before SIGKILL. Uvicorn's own
+    # --timeout-graceful-shutdown (5s) bounds an open SSE client, but lifespan
+    # shutdown also waits for an in-progress reconciler tick to finish, so give
+    # it real headroom rather than Docker's 10s default.
+    stop_grace_period: 30s
     ports:
       - "8088:8000"
     # Everything in .env reaches the container, so optional knobs
