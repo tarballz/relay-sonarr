@@ -62,12 +62,11 @@ cd frontend && npm install && npm run dev
 ## Tests
 
 ```bash
-cd backend && uv run pytest         # 35 tests: client, services, availability, API
+cd backend && uv run pytest         # respx-mocked Sonarr + tmp SQLite; no live instances needed
 ```
 
 ## API surface
 
-`GET /api/instances` · `/search?term=` · `/series` · `/queue` ·
-`/instances/{id}/profiles` · `/instances/{id}/root-folders` · `/settings` ·
-`POST /api/add` · `POST /api/smart-add` · `POST /api/advance-fallback` ·
-`GET /api/availability?instanceId=&seriesId=`
+The API lives under `/api` (catalog, adding + SSE streams, operations, reconciler
+status, per-series policy, settings); `/healthz` reports reconciler liveness.
+FastAPI's generated reference is served at `/docs` on a running instance.

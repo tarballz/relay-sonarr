@@ -77,11 +77,34 @@ Each `(instance, profile)` step resolves profile/root-folder **by name** at runt
 
 ### Live progress (SSE) + operation log
 
-The orchestration coroutines take an optional async `emit(event)`. The `/smart-add/stream` and
-`/advance-fallback/stream` GET endpoints wrap them in `_event_stream` (`api/adding.py`), pushing
-each step as an SSE frame *and* appending it to an in-memory `OperationLog` (`operations.py`,
-bounded deque, lost on restart) that the Operations page replays via `GET /api/operations`.
-The non-streaming `POST` variants share the same coroutines with the default no-op emit.
+The orchestration coroutines take an optional async `emit(event)`. The `*/stream` GET endpoints
+wrap them in `_event_stream` (`api/adding.py`), pushing each step as an SSE frame *and* persisting
+it via `OperationStore` (`store/operations.py`, SQLite `operation` + `operation_step` tables) that
+the Operations page reads via `GET /api/operations`. The non-streaming `POST` variants share the
+same coroutines with the default no-op emit.
+
+### Autonomous reconciler
+
+The user declares desired state per series; `reconciler.py` drives reality toward it on a
+background loop (`run()` → guarded `_run_once()` → `tick()`, default every 30 min).
+
+- **Persistence** — `db.py` (stdlib `sqlite3`, one lock-serialized connection, WAL) with
+  repositories in `store/*`. Migrations are additive: `CREATE TABLE IF NOT EXISTS`,
+  `_ensure_column`, and `_run_once` for one-time data repairs keyed in `meta`.
+- **Tick** — `poller.poll_all` (queue + history → placement state transitions, failure backoff),
+  then the sweeps (`sweep_stalled`, `sweep_dangerous`, `sweep_search_stalls`), then
+  `reconcile_series` per non-paused `series_intent`.
+- **Placement** (`services/placement.py`) — `refresh_availability` runs interactive release
+  searches on gap episodes (TTL-cached in `availability_cache`; zero-release verdicts on aired
+  episodes use the short `emptyReleaseTtlMinutes`); `compute_plan` joins episodes across
+  instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
+  failed/imported/unmonitored`).
+- **Identity** — cross-instance episode identity is always `(tvdb_id, season, episode)`; Sonarr
+  `seriesId`/episode ids are per-instance and must be mapped to tvdb before persisting.
+- **Policy & settings** — `policy.py` (per-series `SeriesPolicy`), runtime defaults in
+  `meta.default_policy` via `store/settings.py`. Env kill switches: `RECONCILER_ENABLED`,
+  `STALLED_CLEANUP_ENABLED`, `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`.
+- **Health** — `GET /api/reconciler/status`; `/healthz` returns 503 when the loop is stale.
 
 ## Frontend
 
@@ -100,6 +123,13 @@ substring match. Pages in `src/pages/`, dialogs/shared in `src/components/`.
 ## Test pattern
 
 Tests mock Sonarr HTTP with `respx` and inject a fixture registry by overriding the dependency:
-`app.dependency_overrides[get_registry] = make_registry` (see `tests/test_api.py`). When
-exercising orchestration timing, pass a fake `sleep` and small `wait_attempts` to `smart_add` /
-`advance_fallback` instead of real delays.
+`app.dependency_overrides[get_registry] = make_registry` (see `tests/test_api.py`; also `get_db`,
+`get_reconciler`). There is no conftest — shared helpers (`make_registry`, base URLs `A`=1080p /
+`B`=4k, `_nosleep`) live in `tests/test_chain.py`. Persistence tests use a real
+`Database(str(tmp_path / "relay.db"))`. The reconciler is driven deterministically with
+`Reconciler(..., clock=lambda: NOW, sleep=_nosleep)` and direct `tick()` / `reconcile_series()`
+calls. When exercising orchestration timing, pass a fake `sleep` and small `wait_attempts`
+instead of real delays.
+
+Frontend builds need no host Node: `docker run --rm -v "$PWD/frontend":/fe -w /fe node:20-alpine
+sh -c "npm install && npm run build"`.
