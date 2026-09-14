@@ -1,8 +1,9 @@
-# Short-TTL zero-release availability verdicts for just-aired episodes
+# Short-TTL zero-release availability verdicts for aired episodes
 
-**Date:** 2026-07-28
-**Component:** `backend/app/services/placement.py` (`refresh_availability`), wired via `backend/app/reconciler.py`
-**Status:** Approved design, pending implementation
+**Date:** 2026-07-28 (revised 2026-09-14 to match the implementation)
+**Component:** `backend/app/services/placement.py` (`refresh_availability`), wired via
+`backend/app/reconciler.py` and `backend/app/api/catalog.py` (`GET /series/{tvdb}/plan?refresh=`)
+**Status:** Implemented
 
 ## Problem
 
@@ -17,12 +18,11 @@ episode was grabbable the whole time; the automation was sitting on a 7-minute-s
 
 ### Root cause
 
-`refresh_availability` (`placement.py:107-124`) caches every interactive-search verdict and
-reuses it while `is_fresh(checked_at, now, ttl)` holds, with a single flat `ttl` (6h). It
-does not distinguish:
+`refresh_availability` caches every interactive-search verdict and reuses it while
+`is_fresh(checked_at, now, ttl)` holds, with a single flat `ttl` (6h). It does not distinguish:
 
 - **"0 total releases"** — often a transient artifact: the indexers were down/flapping, or
-  the episode is too fresh. Cheap to be wrong about; worth re-checking soon.
+  the release simply hasn't been posted yet. Cheap to be wrong about; worth re-checking soon.
 - **"releases exist but none qualify"** (total > 0, e.g. wrong quality/seeders) — a real,
   stable verdict. Re-checking soon just re-hammers indexers for the same "no" answer.
 
@@ -41,13 +41,12 @@ of the 429 flap itself is explicitly out of scope (deferred "option B").
 
 ## Goal
 
-A zero-release verdict for a recently-aired episode is re-checked within ~45 minutes, so a
-release that appears after a transient outage is grabbed within the hour — without
-increasing indexer load on permanent gaps, unaired episodes, or stable "rejected-only"
-verdicts.
+A zero-release verdict for an aired episode is re-checked within ~45 minutes, so a release
+that appears after a transient outage is grabbed within the hour — without increasing
+indexer load on unaired episodes or stable "rejected-only" verdicts.
 
 Non-goals (YAGNI): per-episode adaptive backoff; short-TTL for non-empty verdicts;
-short-TTL for gaps that are not recently aired; touching RSS/Sonarr behavior.
+touching RSS/Sonarr behavior.
 
 ## Design
 
@@ -55,74 +54,78 @@ Choose the TTL per cached verdict inside `refresh_availability`'s cache-hit bran
 of using one flat `ttl`:
 
 ```
-effective_ttl = empty_ttl  if (cached["total_releases"] == 0 and _recently_aired(ep, now))
+effective_ttl = empty_ttl  if (cached["total_releases"] == 0 and _has_aired(ep, now))
                 else ttl
 if cached is not None and is_fresh(cached["checked_at"], now, effective_ttl)
    and cached["min_seeders"] == min_seeders:
        # use cache
 ```
 
-- **`empty_ttl`** — new parameter on `refresh_availability`, default **2700s (45 min)**.
-  Applied only to `total_releases == 0` verdicts on recently-aired episodes.
-- **`_recently_aired(ep, now, days=RECENT_AIR_DAYS) -> bool`** — parses `ep["airDateUtc"]`
-  (ISO-8601, the field Sonarr already returns on each episode). Returns True only if the
-  airdate parses and falls within `[now - days, now]`. **Future airdates → False**
-  (unaired episodes legitimately have 0 releases; keep the 6h TTL). **Missing / unparseable
-  airdate → False** (conservative: unknown → keep the long TTL).
-- **`RECENT_AIR_DAYS = 14`** — module constant in `placement.py`.
+- **`empty_ttl`** — parameter on `refresh_availability`, default `EMPTY_RELEASE_TTL`
+  = **2700s (45 min)**. Applied only to `total_releases == 0` verdicts on aired episodes.
+- **`_has_aired(ep, now) -> bool`** — parses `ep["airDateUtc"]` (ISO-8601, already on each
+  Sonarr episode). True only if the airdate parses and is `<= now`. **Future airdates →
+  False** (unaired episodes legitimately have 0 releases; keep the 6h TTL). **Missing /
+  unparseable airdate → False** (conservative: unknown → keep the long TTL).
 
-Everything else keeps the existing 6h TTL: "releases exist but none qualify" (total > 0),
-gaps older than 14 days, and unaired episodes. The `min_seeders` staleness guard is
-unchanged.
+### Revision: no recency window
+
+The original design limited the short TTL to episodes aired within the last 14 days
+(`_recently_aired`, `RECENT_AIR_DAYS = 14`). The implementation deliberately drops the
+window: **any** aired episode with a zero-release verdict gets the short TTL. An old gap
+that returns zero releases is just as likely to be an outage artifact as a new one (the
+Prowlarr 429 flap does not care about air dates), and an old gap that genuinely has no
+releases is re-searched at most ~once per 45 minutes, bounded by the existing
+concurrency-4 semaphore. The window is a knob to reintroduce if indexer load becomes a
+problem — observability work (per-tick availability counts) will show that.
+
+Everything else keeps the existing 6h TTL: "releases exist but none qualify" (total > 0)
+and unaired episodes. The `min_seeders` staleness guard is unchanged.
 
 ### Config
 
-The reconciler reads `emptyReleaseTtlMinutes` (default 45) from `settings_store.get_defaults`
-and passes `empty_ttl = minutes * 60` into `refresh_availability`, mirroring how
-`stalledDays` / `searchStallHours` are threaded. `RECENT_AIR_DAYS` stays a code constant
-(one knob is enough — YAGNI). No settings-schema change (defaults are read inline via
-`.get(...)`).
+`emptyReleaseTtlMinutes` (default 45) is read from `settings_store.get_defaults` and passed as
+`empty_ttl = minutes * 60` into `refresh_availability` by **both** callers: the reconciler
+tick and the manual `GET /series/{tvdb}/plan?refresh=` path, so the knob means the same thing
+everywhere.
 
 ### No schema change
 
 `total_releases` is already a column on `availability_cache`; `airDateUtc` comes from the
 live Sonarr episode dict already in hand inside `refresh_availability`. Existing cache rows
-are honored as-is — the shorter TTL simply makes recently-aired zero-release rows expire
-sooner on the next read.
+are honored as-is — the shorter TTL simply makes aired zero-release rows expire sooner on the
+next read.
 
 ## Why correct & safe
 
-The change only *shortens* trust on exactly one verdict class — a fresh episode with zero
+The change only *shortens* trust on exactly one verdict class — an aired episode with zero
 results, the signature of a transient outage. It never lengthens any TTL, never short-TTLs a
-verdict backed by real releases, and never touches permanent/future gaps. Worst case if the
-release genuinely isn't out yet: a few extra interactive searches (bounded by the existing
-concurrency-4 semaphore) on that one episode until it appears or ages past 14 days.
+verdict backed by real releases, and never touches unaired episodes.
 
 ## Interaction with the reconciler cadence
 
-The reconciler ticks every ~30 min. A 45-min `empty_ttl` means a recently-aired zero-release
-episode is re-checked roughly every other tick (~1 hr worst case), versus every 12th tick
-(6 h) today. Fast enough to close the observed lag, gentle enough not to search the same
-episode every single tick.
+The reconciler ticks every ~30 min. A 45-min `empty_ttl` means an aired zero-release episode
+is re-checked roughly every other tick (~1 hr worst case), versus every 12th tick (6 h)
+before.
 
-## Testing (TDD — failing tests first)
+## Testing
 
-New tests in `backend/tests/` (respx-mocked, `asyncio_mode=auto`), driving
-`refresh_availability` with a pre-seeded `availability_cache` row and a mocked episode list:
+`backend/tests/test_placement.py` (respx-mocked), driving `refresh_availability` with a
+pre-seeded `availability_cache` row and a mocked episode list:
 
-1. **recently-aired + 0 releases**, cache age between `empty_ttl` and `ttl` → verdict treated
-   as **stale**: `refresh_availability` re-hits `/release` (assert the release route is
-   called, and the cache row's `checked_at` advances).
-2. **recently-aired + releases-exist-but-rejected** (`total_releases > 0`), same cache age →
-   **fresh**: no re-hit (assert the release route is NOT called; cached verdict returned).
-3. **old-aired (airdate > 14 d ago) + 0 releases**, same cache age → **fresh** (not hammered).
-4. **future airdate + 0 releases** → **fresh** (not hammered).
-5. **recently-aired + 0 releases**, cache age < `empty_ttl` → **fresh** (not re-checked yet).
-6. `_recently_aired` unit cases: within window True; future False; > 14 d False; missing /
-   unparseable `airDateUtc` False.
+1. **aired + 0 releases**, cache age between `empty_ttl` and `ttl` → **stale**: `/release`
+   is re-hit and `checked_at` advances.
+2. **aired + releases-exist-but-rejected** (`total_releases > 0`), same age → **fresh**.
+3. **aired long ago + 0 releases**, same age → **stale** (no recency window).
+4. **future airdate + 0 releases** → **fresh**.
+5. **aired + 0 releases**, cache age < `empty_ttl` → **fresh**.
+6. `_has_aired` unit cases: past True; future False; missing / unparseable False.
+
+`backend/tests/test_reconciler.py`: the tick threads `emptyReleaseTtlMinutes` through.
+`backend/tests/test_api.py`: the `?refresh=` path honors `emptyReleaseTtlMinutes`.
 
 ## Rollout
 
-No migration, no restart-time backfill. On deploy, the next reconciler tick applies the
-shorter TTL to any recently-aired zero-release cache row on its next read. `emptyReleaseTtlMinutes`
-defaults in code, so no settings write is required.
+No migration, no backfill. On deploy, the next availability read applies the shorter TTL to
+any aired zero-release cache row. `emptyReleaseTtlMinutes` defaults in code, so no settings
+write is required.
