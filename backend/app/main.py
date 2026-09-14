@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
-from app.api import adding, catalog, instances, policy, settings
+from app.api import adding, catalog, instances, observability, policy, settings
 from app.auth import verify_access
 from app.db import Database
 from app.obs.logging import configure_logging
@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Unified Sonarr Dashboard", lifespan=lifespan,
               dependencies=[Depends(verify_access)])
 
-for module in (instances, catalog, adding, settings, policy):
+for module in (instances, catalog, adding, settings, policy, observability):
     app.include_router(module.router)
 
 

@@ -62,9 +62,10 @@ async def verify_access(
     cf_assertion: str | None = Header(default=None, alias="Cf-Access-Jwt-Assertion"),
 ) -> str | None:
     """FastAPI dependency. Returns the authenticated email, or None when disabled."""
-    # The liveness probe must stay reachable even with Access enabled (the
-    # in-container Docker healthcheck has no JWT).
-    if request is not None and request.url.path == "/healthz":
+    # Machine endpoints must stay reachable with Access enabled: the in-container
+    # Docker healthcheck and a LAN Prometheus scrape carry no Access JWT.
+    # (/metrics has its own optional METRICS_TOKEN.)
+    if request is not None and request.url.path in ("/healthz", "/metrics"):
         return None
     cfg = _settings()
     if not cfg["enabled"]:
