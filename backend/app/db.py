@@ -141,6 +141,22 @@ class Database:
         # Best grab candidate {guid, indexerId, seeders, title} captured during
         # the availability check, so the reconciler can grab without re-searching.
         self._ensure_column("availability_cache", "best_release_json", "TEXT")
+        # The stalled/dangerous sweeps once stored Sonarr's per-instance seriesId
+        # as tvdb_id. The instance wasn't recorded, so the real tvdb id can't be
+        # recovered: clear the misleading values rather than guess.
+        self._run_once(
+            "fix_sweep_tvdb_v1",
+            "UPDATE operation SET tvdb_id=NULL "
+            "WHERE kind IN ('stalled-cleanup', 'dangerous-cleanup')",
+        )
+
+    def _run_once(self, key: str, sql: str) -> None:
+        """Apply a one-time data repair, remembered in ``meta`` so it never re-runs
+        (which would clobber rows written correctly after the fix)."""
+        if self._conn.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone():
+            return
+        self._conn.execute(sql)
+        self._conn.execute("INSERT INTO meta(key, value) VALUES(?, 'done')", (key,))
 
     def close(self) -> None:
         with self._lock:

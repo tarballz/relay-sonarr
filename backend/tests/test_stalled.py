@@ -52,6 +52,39 @@ async def test_sweep_removes_only_old_zero_percent_torrents(tmp_path):
 
 
 @respx.mock
+async def test_sweep_records_tvdb_id_not_sonarr_series_id(tmp_path):
+    # A queue record's seriesId is the per-instance Sonarr id. Operations are
+    # keyed on tvdb so they join to a series across instances.
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([_rec(id=11, seriesId=5)]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.get(f"{A}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 5, "tvdbId": 99, "title": "Show"}]))
+    respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    assert await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW) == 1
+    assert (await ops.recent())[0]["tvdbId"] == 99
+
+
+@respx.mock
+async def test_sweep_still_removes_when_series_lookup_fails(tmp_path):
+    # The tvdb id is bookkeeping; failing to resolve it must not block cleanup.
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([_rec(id=11, seriesId=5)]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.get(f"{A}/api/v3/series").mock(return_value=httpx.Response(500))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    assert await sweep_stalled(reg, db, ops, stalled_days=3, cap=25, now=NOW) == 1
+    assert del_route.called
+    assert (await ops.recent())[0]["tvdbId"] is None
+
+
+@respx.mock
 async def test_sweep_catches_download_frozen_at_partial_progress(tmp_path):
     # A torrent that downloaded some bytes and then died is invisible to the
     # "transferred nothing" checks: it has real progress, so sizeleft != size.

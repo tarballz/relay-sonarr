@@ -213,6 +213,28 @@ def _is_stalled(record: dict, *, now: datetime, stalled_days: float) -> bool:
     return (now - added_dt).total_seconds() > stalled_days * 86400.0
 
 
+def _tvdb_lookup(client):
+    """Resolve a queue record's per-instance Sonarr ``seriesId`` to its tvdb id.
+
+    The series list is fetched lazily (only once something is actually swept)
+    and at most once per instance. A failed lookup resolves to None: the tvdb id
+    is bookkeeping, and must never block removing a dead or dangerous download.
+    """
+    by_id: dict | None = None
+
+    async def resolve(series_id):
+        nonlocal by_id
+        if by_id is None:
+            try:
+                by_id = {s["id"]: s.get("tvdbId") for s in await client.list_series()}
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                logger.warning("series lookup failed; recording sweep without tvdb id: %s", exc)
+                by_id = {}
+        return by_id.get(series_id)
+
+    return resolve
+
+
 def _stalled_title(record: dict) -> str:
     base = (record.get("series") or {}).get("title") or record.get("title") or "unknown"
     ep = record.get("episode") or {}
@@ -239,6 +261,7 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             key = (rec.get("downloadId") or "").strip().lower() or f"__rec{rec.get('id')}"
             groups.setdefault(key, []).append(rec)
         live |= set(groups)
+        tvdb_of = _tvdb_lookup(inst.client)
 
         for key, recs in groups.items():
             r = recs[0]
@@ -262,7 +285,7 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             age_days = int((now - added_dt).total_seconds() // 86400)
             title = _stalled_title(r)
             op_id = await ops.start(
-                kind="stalled-cleanup", title=title, tvdb_id=r.get("seriesId") or 0,
+                kind="stalled-cleanup", title=title, tvdb_id=await tvdb_of(r.get("seriesId")),
                 started_at=now.isoformat(), source="reconciler",
             )
             total_size = sum((x.get("size") or 0) for x in recs)
@@ -321,12 +344,13 @@ async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
     for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
         if isinstance(res, Exception):
             continue
+        tvdb_of = _tvdb_lookup(inst.client)
         for r in res.get("records", []):
             if not _is_dangerous(r) or removed >= cap:
                 continue
             title = _stalled_title(r)
             op_id = await ops.start(
-                kind="dangerous-cleanup", title=title, tvdb_id=r.get("seriesId") or 0,
+                kind="dangerous-cleanup", title=title, tvdb_id=await tvdb_of(r.get("seriesId")),
                 started_at=now.isoformat(), source="reconciler",
             )
             try:

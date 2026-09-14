@@ -17,7 +17,7 @@ class OperationStore:
     def __init__(self, db: Database):
         self.db = db
 
-    async def start(self, *, kind: str, title: str, tvdb_id: int, started_at: str,
+    async def start(self, *, kind: str, title: str, tvdb_id: int | None, started_at: str,
                     source: str = "user") -> int:
         """Create an operation row; returns its id for add_step/finish."""
         return await self.db.execute(

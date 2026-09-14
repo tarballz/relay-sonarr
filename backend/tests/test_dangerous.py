@@ -91,6 +91,23 @@ async def test_sweep_removes_flagged_release_and_researches(tmp_path):
 
 
 @respx.mock
+async def test_sweep_dangerous_records_tvdb_id_not_sonarr_series_id(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(
+        [_rec(id=31, seriesId=5, title="Fake.S01E01.1080p.WEB-GRP.exe")]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.get(f"{A}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 5, "tvdbId": 99, "title": "Show"}]))
+    respx.delete(f"{A}/api/v3/queue/31").mock(return_value=httpx.Response(200))
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+
+    assert await sweep_dangerous(reg, db, ops, cap=25, now=NOW) == 1
+    assert (await ops.recent())[0]["tvdbId"] == 99
+
+
+@respx.mock
 async def test_sweep_dangerous_respects_cap(tmp_path):
     db = Database(str(tmp_path / "relay.db"))
     ops = OperationStore(db)
