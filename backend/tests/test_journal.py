@@ -123,5 +123,10 @@ async def test_query_filters_and_keyset_paging(db):
     assert ids(await events_store.query(db, before=3, limit=1)) == [2]
     assert ids(await events_store.since(db, 3, limit=10)) == [4, 5]
     assert ids(await events_store.for_tick(db, 9)) == [5]
+    assert await events_store.latest_id(db) == 5
     with pytest.raises(ValueError):
         await events_store.query(db, level="loud")
+
+
+async def test_latest_id_is_none_on_an_empty_table(db):
+    assert await events_store.latest_id(db) is None

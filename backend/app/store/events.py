@@ -89,3 +89,9 @@ async def since(db: Database, after_id: int, limit: int) -> list[dict]:
 async def for_tick(db: Database, tick_id: int) -> list[dict]:
     rows = await db.query("SELECT * FROM event WHERE tick_id=? ORDER BY id ASC", (tick_id,))
     return [to_dict(r) for r in rows]
+
+
+async def latest_id(db: Database) -> int | None:
+    """The highest event id, or ``None`` if the journal is empty."""
+    row = await db.query_one("SELECT MAX(id) AS id FROM event")
+    return row["id"] if row and row["id"] is not None else None

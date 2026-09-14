@@ -45,7 +45,7 @@ async def test_heartbeat_ping_when_idle(db, journal):
 async def test_resync_and_end_when_replay_exceeds_limit(db, journal):
     await _emit(journal, "a", "b", "c")
     stream = sse.event_stream(journal, db, last_event_id=0, replay_limit=2)
-    assert await stream.__anext__() == sse.RESYNC_FRAME
+    assert await stream.__anext__() == sse.resync_frame(3)
     with pytest.raises(StopAsyncIteration):
         await stream.__anext__()
     assert journal._subs == set()
@@ -57,7 +57,7 @@ async def test_overflowed_subscription_ends_with_resync(db, journal):
     await asyncio.sleep(0.01)
     [sub] = journal._subs
     sub.queue.put_nowait(RESYNC)
-    assert await pending == sse.RESYNC_FRAME
+    assert await pending == sse.resync_frame(None)
     with pytest.raises(StopAsyncIteration):
         await stream.__anext__()
 
@@ -73,6 +73,6 @@ def test_stream_endpoint_headers_and_last_event_id(db, journal, monkeypatch):
             assert r.headers["content-type"].startswith("text/event-stream")
             assert r.headers["cache-control"] == "no-cache, no-transform"
             assert r.headers["x-accel-buffering"] == "no"
-            assert "".join(r.iter_text()) == sse.RESYNC_FRAME
+            assert "".join(r.iter_text()) == sse.resync_frame(3)
     finally:
         app.dependency_overrides.pop(get_db, None)

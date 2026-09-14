@@ -16,11 +16,19 @@ from app.store import events as events_store
 REPLAY_LIMIT = 500
 HEARTBEAT_S = 15.0   # well inside Cloudflare's ~100s idle timeout
 PING = ": ping\n\n"
-RESYNC_FRAME = "event: resync\ndata: {}\n\n"
 
 
 def frame(event: dict) -> str:
     return f"id: {event['id']}\nevent: journal\ndata: {json.dumps(event)}\n\n"
+
+
+def resync_frame(latest_id: int | None) -> str:
+    """A resync frame carrying an ``id:`` when one is known, so a client that
+    reconnects with ``Last-Event-ID`` set to it doesn't just get resynced again
+    forever (EventSource always resends the last frame id it saw)."""
+    if latest_id is None:
+        return "event: resync\ndata: {}\n\n"
+    return f"id: {latest_id}\nevent: resync\ndata: {{}}\n\n"
 
 
 async def event_stream(journal, db, *, last_event_id: int | None,
@@ -32,7 +40,7 @@ async def event_stream(journal, db, *, last_event_id: int | None,
         if last is not None:
             replay = await events_store.since(db, last, limit + 1)
             if len(replay) > limit:
-                yield RESYNC_FRAME
+                yield resync_frame(await events_store.latest_id(db))
                 return
             for event in replay:
                 yield frame(event)
@@ -44,7 +52,7 @@ async def event_stream(journal, db, *, last_event_id: int | None,
                 yield PING
                 continue
             if item is RESYNC:
-                yield RESYNC_FRAME
+                yield resync_frame(await events_store.latest_id(db))
                 return
             if last is not None and item["id"] <= last:
                 continue
