@@ -49,3 +49,25 @@ def test_app_lifespan_wires_observability(tmp_path, monkeypatch):
 
     assert isinstance(get_journal(), NullJournal)
     assert app.state.journal is None and app.state.monitor is None
+
+
+# --- reconciler interval knob -------------------------------------------------
+
+def test_reconciler_interval_defaults_to_30_minutes(monkeypatch):
+    from app.main import _reconciler_interval
+    monkeypatch.delenv("RECONCILER_INTERVAL_S", raising=False)
+    assert _reconciler_interval() == 1800.0
+
+
+def test_reconciler_interval_reads_the_env_knob(monkeypatch):
+    from app.main import _reconciler_interval
+    monkeypatch.setenv("RECONCILER_INTERVAL_S", "3600")
+    assert _reconciler_interval() == 3600.0
+
+
+def test_reconciler_interval_ignores_nonsense(monkeypatch):
+    """A typo in .env must not silently produce a hot loop or a crash at startup."""
+    from app.main import _reconciler_interval
+    for bad in ("", "abc", "0", "-5"):
+        monkeypatch.setenv("RECONCILER_INTERVAL_S", bad)
+        assert _reconciler_interval() == 1800.0

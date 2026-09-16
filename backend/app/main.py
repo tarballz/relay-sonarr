@@ -43,6 +43,23 @@ def _search_stall_cleanup_enabled() -> bool:
     return os.environ.get("SEARCH_STALL_CLEANUP_ENABLED", "true").lower() != "false"
 
 
+def _reconciler_interval() -> float:
+    """Seconds between reconciler passes (RECONCILER_INTERVAL_S, default 30 min).
+
+    Raise it when a tick routinely runs longer than the interval: ticks are
+    lock-serialized, so the loop simply never idles, and against public indexers
+    that cycle in and out of failure a tick's duration is set by whichever ones
+    happen to be sick. A nonsense value falls back to the default rather than
+    producing a hot loop from a typo in .env.
+    """
+    raw = os.environ.get("RECONCILER_INTERVAL_S", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return 1800.0
+    return value if value > 0 else 1800.0
+
+
 def _configure_logging() -> None:
     configure_logging(
         os.environ.get("LOG_LEVEL", "INFO"),
@@ -80,7 +97,8 @@ async def lifespan(app: FastAPI):
     app.state.monitor = Monitor(app.state.registry, app.state.db)
     app.state.reconciler = Reconciler(
         app.state.registry, app.state.db, app.state.operations,
-        enabled=enabled, stalled_cleanup=_stalled_cleanup_enabled(),
+        enabled=enabled, interval=_reconciler_interval(),
+        stalled_cleanup=_stalled_cleanup_enabled(),
         dangerous_cleanup=_dangerous_cleanup_enabled(),
         search_stall_cleanup=_search_stall_cleanup_enabled(),
         monitor=app.state.monitor,
