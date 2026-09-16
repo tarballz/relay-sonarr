@@ -132,6 +132,30 @@ def _journal_verdict_change(*, tvdb_id: int, season: int, episode: int, instance
     )
 
 
+def _verdict_survives_floor_change(cached_floor, qualifies: bool, floor: int) -> bool:
+    """Can a cached verdict be reused under a different seeder floor?
+
+    ``qualifying_count`` is monotonically non-increasing in the floor, so:
+      * a stricter floor can only turn a "yes" into a "no" — a cached "no" stands;
+      * a looser floor can only turn a "no" into a "yes" — a cached "yes" stands.
+
+    Everything else has to be re-searched. This matters far more than it looks:
+    treating any threshold change as invalidating turned the default moving 3 -> 5
+    into 1540 of 1545 verdicts needing a fresh interactive search — hours of them,
+    four at a time, to re-derive answers that could not have changed.
+    """
+    # A NULL threshold is a row written before the seeder gate existed, when
+    # count_qualifying applied no seeder filter at all (db.py:185 added the
+    # column with no default and no backfill). That is a floor of 0, not an
+    # unknown — and treating it as such saves re-searching 405 verdicts here.
+    cached_floor = 0 if cached_floor is None else cached_floor
+    if floor == cached_floor:
+        return True
+    if floor > cached_floor:
+        return not qualifies
+    return bool(qualifies)
+
+
 async def refresh_availability(
     registry: Registry,
     db,
@@ -183,12 +207,13 @@ async def refresh_availability(
             if cached is not None and cached["total_releases"] == 0 and _has_aired(ep, now)
             else ttl
         )
-        # A verdict computed under a different seeder threshold is stale even
-        # within TTL — flipping the knob takes effect on the next sweep.
+        # A verdict computed under a different seeder threshold is only stale if
+        # the change could actually flip it — see _verdict_survives_floor_change.
         if (
             cached is not None
             and avail_cache.is_fresh(cached["checked_at"], now, effective_ttl)
-            and cached["min_seeders"] == floor
+            and _verdict_survives_floor_change(
+                cached["min_seeders"], bool(cached["qualifies"]), floor)
         ):
             results.append({
                 "season": season, "episode": epnum,

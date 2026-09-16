@@ -531,3 +531,101 @@ async def test_relax_disabled_keeps_the_floor_forever(tmp_path):
     rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
 
     assert rows[0]["qualifies"] is False
+
+
+# --- a floor change must not re-search the whole library ----------------------
+
+def _cached_release(seeders=9):
+    return httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": seeders,
+         "guid": "g", "indexerId": 1},
+    ])
+
+
+@respx.mock
+async def test_stricter_floor_reuses_a_cached_no(tmp_path):
+    """qualifying_count only falls as the floor rises, so a cached "no" stands.
+
+    Keying the cache on the floor alone invalidated 1540 of 1545 verdicts the
+    moment the default moved 3 -> 5 — hours of interactive searches, four at a
+    time, to re-derive answers that could not have changed.
+    """
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=_cached_release(2))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 3, "seederRelaxAfterDays": 0})
+    r1 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+    assert r1[0]["qualifies"] is False
+
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 0})
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 1          # no second search
+    assert r2[0]["cached"] is True
+    assert r2[0]["qualifies"] is False
+
+
+@respx.mock
+async def test_looser_floor_reuses_a_cached_yes(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=_cached_release(9))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 0})
+    assert (await placement.refresh_availability(
+        reg, db, tvdb_id=TVDB, instance_id="4k"))[0]["qualifies"] is True
+
+    await settings_store.set_defaults(db, {"minSeeders": 1, "seederRelaxAfterDays": 0})
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 1
+    assert r2[0]["qualifies"] is True
+
+
+@respx.mock
+async def test_stricter_floor_rechecks_a_cached_yes(tmp_path):
+    """This one really can flip, so it must be re-searched."""
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=_cached_release(4))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 3, "seederRelaxAfterDays": 0})
+    assert (await placement.refresh_availability(
+        reg, db, tvdb_id=TVDB, instance_id="4k"))[0]["qualifies"] is True
+
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 0})
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 2
+    assert r2[0]["qualifies"] is False
+
+
+@respx.mock
+async def test_looser_floor_rechecks_a_cached_no(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=_cached_release(4))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 0})
+    assert (await placement.refresh_availability(
+        reg, db, tvdb_id=TVDB, instance_id="4k"))[0]["qualifies"] is False
+
+    await settings_store.set_defaults(db, {"minSeeders": 1, "seederRelaxAfterDays": 0})
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 2
+    assert r2[0]["qualifies"] is True
+
+
+def test_verdict_reuse_rules():
+    from app.services.placement import _verdict_survives_floor_change as ok
+    assert ok(3, False, 5) is True      # stricter, cached no  -> still no
+    assert ok(3, True, 5) is False      # stricter, cached yes -> may flip
+    assert ok(5, True, 1) is True       # looser,   cached yes -> still yes
+    assert ok(5, False, 1) is False     # looser,   cached no  -> may flip
+    assert ok(3, True, 3) is True       # unchanged
+    # A NULL threshold predates the seeder gate, i.e. it was computed with no
+    # filter at all — a floor of 0, so the same monotonicity applies.
+    assert ok(None, False, 5) is True   # no filter found nothing -> a filter won't
+    assert ok(None, True, 5) is False   # found something unfiltered -> may flip
