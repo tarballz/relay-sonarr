@@ -26,6 +26,14 @@ from app.obs import context, kinds
 from app.obs.journal import get_journal
 from app.obs.metrics import LAST_TICK_TS, RECONCILER_HEALTHY, TICK_DURATION, TICK_TOTAL
 from app.obs.stats import TickStats
+from app.services import liveness
+from app.services.availability import DEFAULT_MIN_SEEDERS
+from app.services.poller import (
+    DEFAULT_DEAD_HOURS,
+    DEFAULT_NEAR_COMPLETE_PCT,
+    DEFAULT_REGRAB_CAP,
+    DEFAULT_STALLED_DAYS,
+)
 from app.policy import effective_policy
 from app.services import orchestrate, placement, poller
 from app.services.library import combined_series
@@ -283,12 +291,27 @@ class Reconciler:
                     )
 
         defaults = await settings_store.get_defaults(self.db)
+        # Ask the download client once per tick what it thinks of each swarm.
+        # Its own phase so an outage shows up as a degraded tick rather than
+        # silently reverting the sweep to age-only guessing.
+        swarms: dict = {}
+        if self.registry.downloads() is not None:
+            async with self._phase(stats, "download_liveness", swallow=True) as phase:
+                swarms = await liveness.liveness_map(self.registry.downloads())
+                phase["torrents"] = len(swarms)
+                phase["dead"] = sum(1 for lv in swarms.values() if liveness.is_dead(lv))
         if self.stalled_cleanup:
             async with self._phase(stats, "sweep_stalled", swallow=True) as phase:
                 phase["count"] = await poller.sweep_stalled(
                     self.registry, self.db, self.ops,
-                    stalled_days=defaults.get("stalledDays", 3),
+                    stalled_days=defaults.get("stalledDays", DEFAULT_STALLED_DAYS),
                     cap=self._stalled_cap, now=self.now(),
+                    dead_hours=defaults.get("deadHours", DEFAULT_DEAD_HOURS),
+                    liveness=swarms,
+                    near_complete_pct=defaults.get("nearCompletePct",
+                                                   DEFAULT_NEAR_COMPLETE_PCT),
+                    min_seeders=int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS)),
+                    regrab_cap=int(defaults.get("regrabCap", DEFAULT_REGRAB_CAP)),
                 )
                 stats.swept += phase["count"]
         if self.dangerous_cleanup:

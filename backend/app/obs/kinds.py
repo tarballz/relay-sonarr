@@ -17,6 +17,9 @@ SWEEP_STALLED_REMOVED = "sweep.stalled.removed"
 SWEEP_DANGEROUS_REMOVED = "sweep.dangerous.removed"
 SWEEP_SEARCH_STALL_REVERTED = "sweep.search_stall.reverted"
 SWEEP_FAILED = "sweep.failed"
+SWEEP_STALLED_REGRABBED = "sweep.stalled.regrabbed"
+
+DOWNLOAD_CLIENT_ERROR = "download.client_error"
 
 AVAILABILITY_CHANGED = "availability.changed"
 AVAILABILITY_ZERO_SPIKE = "availability.zero_spike"

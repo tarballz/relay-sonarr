@@ -6,6 +6,8 @@ import httpx
 import respx
 
 from app.db import Database
+from app.obs import context
+from app.obs.stats import TickStats
 from app.policy import SeriesPolicy
 from app.reconciler import Reconciler
 from app.store import availability as avail_cache
@@ -414,8 +416,9 @@ async def test_tick_runs_stalled_sweep_when_enabled(tmp_path, monkeypatch):
     async def fake_poll_all(*a, **k):
         return {"polled": []}
 
-    async def fake_sweep(registry, db_, ops_, *, stalled_days, cap, now):
+    async def fake_sweep(registry, db_, ops_, *, stalled_days, cap, now, **kw):
         called["days"] = stalled_days
+        called.update(kw)
         called["cap"] = cap
         return 0
 
@@ -499,3 +502,111 @@ async def test_tick_skips_dangerous_sweep_when_disabled(tmp_path, monkeypatch):
 
 async def _anoop():
     return None
+
+
+# --- download-client liveness -------------------------------------------------
+
+RPC = "http://10.0.0.3:9091/transmission/rpc"
+
+
+def _make_with_transmission(tmp_path):
+    from app.download.transmission import TransmissionClient
+
+    reg, db, ops, rec = _make(tmp_path)
+    reg._downloads = TransmissionClient(base_url=RPC)
+    return reg, db, ops, rec
+
+
+def _rpc_ok(torrents):
+    return httpx.Response(200, json={"result": "success",
+                                     "arguments": {"torrents": torrents}})
+
+
+def _isolate_stalled_sweep(monkeypatch, rec, seen):
+    """Run a tick with only the stalled sweep live, capturing its kwargs."""
+    rec.stalled_cleanup = True
+    rec.dangerous_cleanup = False       # otherwise it hits the real Sonarr queues
+    rec.search_stall_cleanup = False
+
+    async def fake_poll_all(*a, **k):
+        return {"polled": []}
+
+    async def fake_sweep(registry, db_, ops_, *, stalled_days, cap, now, **kw):
+        seen["days"] = stalled_days
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr("app.reconciler.poller.poll_all", fake_poll_all)
+    monkeypatch.setattr("app.reconciler.poller.sweep_stalled", fake_sweep)
+    monkeypatch.setattr(rec, "_ensure_intents", lambda: _anoop())
+
+
+async def _tick_phases(rec):
+    """Run one tick and return its phase dict (tick() itself doesn't persist)."""
+    stats = TickStats()
+    token = context.tick_stats.set(stats)
+    try:
+        await rec.tick()
+    finally:
+        context.tick_stats.reset(token)
+    return stats.phases
+
+
+async def test_tick_skips_the_liveness_phase_without_a_download_client(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make(tmp_path)
+    seen = {}
+    _isolate_stalled_sweep(monkeypatch, rec, seen)
+
+    phases = await _tick_phases(rec)
+
+    assert seen["liveness"] == {}          # the sweep still ran, with no opinion
+    assert "download_liveness" not in phases
+
+
+@respx.mock
+async def test_tick_feeds_liveness_into_the_stalled_sweep(tmp_path, monkeypatch):
+    reg, db, ops, rec = _make_with_transmission(tmp_path)
+    respx.post(RPC).mock(return_value=_rpc_ok([
+        {"hashString": "AA", "metadataPercentComplete": 0.0, "percentDone": 0.0,
+         "peersConnected": 0, "rateDownload": 0, "trackerStats": []},
+        {"hashString": "BB", "metadataPercentComplete": 1.0, "percentDone": 0.2,
+         "peersConnected": 3, "rateDownload": 900, "trackerStats": [{"seederCount": 12}]},
+        {"hashString": "CC", "metadataPercentComplete": 1.0, "percentDone": 0.0,
+         "peersConnected": 0, "rateDownload": 0, "trackerStats": [{"seederCount": 0}]},
+    ]))
+    seen = {}
+    _isolate_stalled_sweep(monkeypatch, rec, seen)
+
+    phases = await _tick_phases(rec)
+
+    assert set(seen["liveness"]) == {"aa", "bb", "cc"}
+    assert phases["download_liveness"]["torrents"] == 3
+    assert phases["download_liveness"]["dead"] == 2   # no metadata, and 0 seeders
+
+
+@respx.mock
+async def test_unreachable_download_client_degrades_the_tick(tmp_path, monkeypatch):
+    """One component down degrades the tick; it never fails it."""
+    reg, db, ops, rec = _make_with_transmission(tmp_path)
+    respx.post(RPC).mock(side_effect=httpx.ConnectError("refused"))
+    seen = {}
+    _isolate_stalled_sweep(monkeypatch, rec, seen)
+
+    phases = await _tick_phases(rec)
+
+    assert seen["liveness"] == {}          # sweep still ran, degraded to age-only
+    assert phases["download_liveness"]["torrents"] == 0
+
+
+async def test_sweep_defaults_favour_replacing_dead_grabs_quickly(tmp_path, monkeypatch):
+    """A dead grab wedges its episode, so three days of patience is too many."""
+    reg, db, ops, rec = _make(tmp_path)
+    seen = {}
+    _isolate_stalled_sweep(monkeypatch, rec, seen)
+
+    await _tick_phases(rec)
+
+    assert seen["days"] == 1
+    assert seen["dead_hours"] == 6
+    assert seen["min_seeders"] == 5
+    assert seen["regrab_cap"] == 5

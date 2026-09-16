@@ -164,9 +164,13 @@ function DefaultsEditor({ onToast, qc }) {
     if (data) setForm({
       allowSplit: data.allowSplit ?? true,
       escalateAfterDays: data.escalateAfterDays ?? 0,
-      stalledDays: data.stalledDays ?? 3,
-      minSeeders: data.minSeeders ?? 3,
+      stalledDays: data.stalledDays ?? 1,
+      minSeeders: data.minSeeders ?? 5,
       seederGrab: data.seederGrab ?? true,
+      deadHours: data.deadHours ?? 6,
+      seederRelaxAfterDays: data.seederRelaxAfterDays ?? 3,
+      nearCompletePct: data.nearCompletePct ?? 95,
+      regrabCap: data.regrabCap ?? 5,
     });
   }, [JSON.stringify(data)]);
 
@@ -226,6 +230,52 @@ function DefaultsEditor({ onToast, qc }) {
           />
         </label>
         <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Treat a torrent with no metadata or 0 seeders as dead after (hours)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            value={form.deadHours}
+            onChange={(e) => setForm((f) => ({ ...f, deadHours: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          Needs a download client configured in config.yaml — Sonarr reports a dead
+          torrent as "ok", so only the client can tell one apart from a slow one.
+          Without it this field has no effect and the day-based threshold applies.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Never discard a download past (% complete)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            max="100"
+            value={form.nearCompletePct}
+            onChange={(e) => setForm((f) => ({ ...f, nearCompletePct: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          A removal blocklists the release, so the replacement restarts from zero.
+          Downloads above this mark keep a 3-day grace instead. Set to 100 to disable.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Replacement grabs per tick (0 = let Sonarr re-search)
+          <input
+            className="input"
+            type="number"
+            min="0"
+            value={form.regrabCap}
+            onChange={(e) => setForm((f) => ({ ...f, regrabCap: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          After removing a dead torrent Relay searches and grabs the best-seeded
+          replacement itself, because Sonarr's own re-search ranks by quality and
+          often re-picks another dead release. Each one costs a slow interactive
+          search, so the budget is small.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
           Minimum torrent seeders to count a release (0 = off)
           <input
             className="input"
@@ -239,6 +289,22 @@ function DefaultsEditor({ onToast, qc }) {
           Applies to Relay's availability checks and tier decisions only — Sonarr's own
           RSS/automatic grabs don't see it. Set "Minimum Seeders" on your indexers in
           Sonarr/Prowlarr as the enforcement backstop.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Accept the best available release after (days wanted)
+          <input
+            className="input"
+            type="number"
+            min="0"
+            value={form.seederRelaxAfterDays}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, seederRelaxAfterDays: Number(e.target.value) }))
+            }
+          />
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          Old back-catalogue legitimately tops out at a handful of seeders, so the
+          floor above gives way once an episode has waited this long. 0 never relaxes.
         </div>
         <div style={{ marginTop: 16 }}>
           <button className="btn primary" disabled={busy} onClick={save}>

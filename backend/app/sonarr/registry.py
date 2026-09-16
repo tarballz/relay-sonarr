@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import Config, FallbackStep
+from app.download.transmission import TransmissionClient
 from app.sonarr.client import SonarrClient
 
 
@@ -34,6 +35,11 @@ class Registry:
                 default_root_folder=cfg.default_root_folder,
             )
         self._chains = dict(config.fallback_chains)
+        # Optional: absent config means every liveness-aware path no-ops.
+        dc = config.download_client
+        self._downloads = TransmissionClient(
+            base_url=dc.url, username=dc.username, password=dc.password,
+        ) if dc else None
 
     def get(self, instance_id: str) -> Instance:
         if instance_id not in self._instances:
@@ -43,10 +49,16 @@ class Registry:
     def all(self) -> list[Instance]:
         return list(self._instances.values())
 
+    def downloads(self) -> TransmissionClient | None:
+        """The torrent client, or None when none is configured."""
+        return self._downloads
+
     async def aclose(self) -> None:
         """Close every instance's shared HTTP pool (app shutdown)."""
         for inst in self._instances.values():
             await inst.client.aclose()
+        if self._downloads is not None:
+            await self._downloads.aclose()
 
     def fallback_chain(self, instance_id: str) -> list[FallbackStep]:
         """Ordered fallback steps for an instance (empty if none configured)."""

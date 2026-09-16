@@ -303,15 +303,21 @@ class SonarrClient:
         )
 
     async def delete_queue_item(self, queue_id: int, *, remove_from_client: bool = True,
-                                blocklist: bool = True) -> None:
+                                blocklist: bool = True,
+                                skip_redownload: bool = False) -> None:
         """Remove a queue item (DELETE /queue/{id}).
 
         With blocklist=true Sonarr blocklists the release so it isn't re-grabbed and,
-        leaving skipRedownload at its default, searches for a replacement."""
+        leaving skipRedownload at its default, searches for a replacement.
+
+        Pass skip_redownload=True when the caller will grab a replacement itself:
+        Sonarr's own re-search ranks by quality, not liveness, so letting both run
+        races us and often re-queues another dead torrent."""
         await self._delete(
             f"/queue/{queue_id}",
             {
                 "removeFromClient": str(remove_from_client).lower(),
                 "blocklist": str(blocklist).lower(),
+                "skipRedownload": str(skip_redownload).lower(),
             },
         )

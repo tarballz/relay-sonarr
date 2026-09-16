@@ -15,8 +15,10 @@ from datetime import datetime, timedelta, timezone
 from app.obs import kinds
 from app.obs.journal import get_journal
 from app.obs.metrics import SWEEP_REMOVED
+from app.services import grab
 from app.services.availability import looks_dangerous
 from app.services.fanout import gather_instances
+from app.services.liveness import is_dead
 
 logger = logging.getLogger(__name__)
 from app.sonarr.registry import Instance, Registry
@@ -253,6 +255,48 @@ def _tvdb_lookup(client):
     return resolve
 
 
+def _episode_id(record: dict):
+    """The episode a queue record covers.
+
+    Sonarr returns both a flat ``episodeId`` and, because we fetch the queue with
+    ``includeEpisode=true``, a nested ``episode`` object. Different Sonarr
+    versions populate them differently, so accept either.
+    """
+    return record.get("episodeId") or (record.get("episode") or {}).get("id")
+
+
+async def _regrab_after_removal(inst, ops, op_id, episode_id, *, title,
+                                min_seeders, tvdb_id) -> None:
+    """Grab the best-seeded replacement for an episode we just freed up.
+
+    Runs *after* the delete on purpose: while the dead item is queued Sonarr
+    rejects every alternative with "Release in queue already meets cutoff",
+    including live, well-seeded ones, so a search before the delete finds
+    nothing to grab. Failure is soft — the placement falls back to ``wanted``
+    and the reconciler searches it again on the next tick.
+    """
+    best = await grab.regrab_episode(
+        inst.client, episode_id=episode_id, min_seeders=min_seeders)
+    if best is None:
+        await ops.add_step(op_id, {
+            "phase": "regrab", "status": "warn",
+            "message": f"No healthy replacement found for {title} — left for the next tick",
+        })
+        return
+    await ops.add_step(op_id, {
+        "phase": "regrab", "status": "done",
+        "message": f"Grabbed replacement — {best.get('title')} "
+                   f"({best.get('seeders')} seeders)",
+    })
+    get_journal().emit(
+        kinds.SWEEP_STALLED_REGRABBED,
+        f"Replaced {title} with {best.get('title')} ({best.get('seeders')} seeders)",
+        source="sweep", tvdb_id=tvdb_id, instance_id=inst.id, operation_id=op_id,
+        data={"title": title, "replacement": best.get("title"),
+              "seeders": best.get("seeders")},
+    )
+
+
 def _stalled_title(record: dict) -> str:
     base = (record.get("series") or {}).get("title") or record.get("title") or "unknown"
     ep = record.get("episode") or {}
@@ -261,12 +305,53 @@ def _stalled_title(record: dict) -> str:
     return base
 
 
+# Three days was chosen when a stalled torrent was merely wasteful. It isn't:
+# a wedged queue item makes Sonarr reject every alternative for that episode
+# ("already meets cutoff"), so the episode is blocked for as long as we wait.
+DEFAULT_STALLED_DAYS = 1.0
+# No metadata or zero seeders everywhere is not a slow download, it's a dead
+# one. More hours cannot change that, so don't spend days finding out.
+DEFAULT_DEAD_HOURS = 6.0
+DEFAULT_NEAR_COMPLETE_PCT = 95.0
+# An interactive search takes 55-95s and bursts earn a Prowlarr 429, so the
+# replacement budget is far smaller than the removal cap.
+DEFAULT_REGRAB_CAP = 5
+
+# A download this close to done is worth more patience than the ordinary
+# threshold: discarding 98% of a transfer is the expensive mistake, and a
+# blocklist means the replacement restarts from zero.
+NEAR_COMPLETE_GRACE_DAYS = 3.0
+
+
 async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
-                        now: datetime) -> int:
+                        now: datetime, dead_hours: float = 6.0,
+                        liveness: dict | None = None,
+                        near_complete_pct: float = 95.0,
+                        min_seeders: int = 0, regrab_cap: int = 0) -> int:
     """Remove torrents stuck at 0% past the threshold. Sonarr removes them from the
-    client, blocklists the release, and re-searches. Returns the number removed."""
+    client, blocklists the release, and re-searches. Returns the number removed.
+
+    ``liveness`` is the download client's own view of each swarm, keyed by
+    infohash (see services/liveness.py). It sharpens the verdict in two ways:
+
+      * a torrent the client says is *dead* — no metadata, or zero seeders on
+        every tracker — is removed after ``dead_hours`` instead of waiting out
+        ``stalled_days``, because more time cannot help it;
+      * a torrent that is actually moving bytes is never removed, whatever the
+        age and progress heuristics conclude.
+
+    An empty or absent map means "no opinion", which reproduces the age-only
+    behavior exactly — so an unreachable download client degrades this sweep
+    rather than changing its verdicts.
+
+    With ``regrab_cap`` above zero the sweep also *replaces* what it removes: it
+    suppresses Sonarr's own re-search and grabs the best-seeded alternative
+    itself. Interactive searches are slow and rate-limited, so that budget is
+    deliberately far smaller than ``cap``.
+    """
     removed = 0
     skipped = 0
+    regrabs = 0
     live: set[str] = set()
     for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
         if isinstance(res, Exception):
@@ -285,17 +370,39 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             r = recs[0]
             # Sum across the group: each episode record holds a slice of the torrent.
             total_left = sum((x.get("sizeleft") or 0) for x in recs)
+            total_size = sum((x.get("size") or 0) for x in recs)
+            swarm = (liveness or {}).get(key)
+
+            # Bytes are moving: the download client is the only ground truth
+            # about the swarm, so it overrides every age/progress heuristic.
+            # Still record the observation, or the frozen clock would restart
+            # from scratch the moment it does stall.
+            if swarm is not None and (swarm.peers_connected > 0 or swarm.rate_download > 0):
+                await progress.observe(db, download_id=key, sizeleft=total_left, now=now)
+                continue
+
             unchanged_since = await progress.observe(
                 db, download_id=key, sizeleft=total_left, now=now,
             )
+            pct_done = (total_size - total_left) / total_size if total_size else 0.0
+            dead = swarm is not None and is_dead(swarm)
+            if pct_done >= near_complete_pct / 100.0:
+                threshold, reason = max(stalled_days, NEAR_COMPLETE_GRACE_DAYS), "near-complete"
+            elif dead:
+                threshold, reason = dead_hours / 24.0, "dead"
+            else:
+                threshold, reason = stalled_days, "zero-progress"
+
             frozen = (
                 r.get("protocol") == "torrent"
                 and (r.get("status") or "").lower() in _STALLABLE_STATUSES
                 and progress.stalled_since(
-                    unchanged_since, now=now, stalled_days=stalled_days)
+                    unchanged_since, now=now, stalled_days=threshold)
             )
-            if not (_is_stalled(r, now=now, stalled_days=stalled_days) or frozen):
+            if not (_is_stalled(r, now=now, stalled_days=threshold) or frozen):
                 continue
+            if frozen and reason == "zero-progress":
+                reason = "frozen"
             if removed >= cap:
                 skipped += 1
                 continue
@@ -307,10 +414,13 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                 kind="stalled-cleanup", title=title, tvdb_id=tvdb_id,
                 started_at=now.isoformat(), source="reconciler",
             )
-            total_size = sum((x.get("size") or 0) for x in recs)
-            pct = (total_size - total_left) / total_size * 100 if total_size else 0.0
+            pct = pct_done * 100
+            # Only replace a single-episode torrent: a season pack would cost one
+            # interactive search per episode, and those are slow and rate-limited.
+            episode_ids = {eid for eid in (_episode_id(x) for x in recs) if eid}
+            do_regrab = len(episode_ids) == 1 and regrabs < regrab_cap
             try:
-                await inst.client.delete_queue_item(r["id"])
+                await inst.client.delete_queue_item(r["id"], skip_redownload=do_regrab)
                 await ops.add_step(op_id, {
                     "phase": "remove", "status": "done",
                     "message": f"Removed stalled torrent — {title}, stuck at {pct:.0f}% "
@@ -326,8 +436,16 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                     f"Removed stalled torrent — {title}, stuck at {pct:.0f}% for {age_days}d",
                     source="sweep", tvdb_id=tvdb_id, instance_id=inst.id, operation_id=op_id,
                     data={"title": title, "ageDays": age_days, "progressPct": round(pct, 1),
-                          "downloadId": r.get("downloadId"), "queueId": r["id"]},
+                          "downloadId": r.get("downloadId"), "queueId": r["id"],
+                          "reason": reason,
+                          "seeders": swarm.max_seeders if swarm else None},
                 )
+                if do_regrab:
+                    regrabs += 1
+                    await _regrab_after_removal(
+                        inst, ops, op_id, episode_ids.pop(), title=title,
+                        min_seeders=min_seeders, tvdb_id=tvdb_id,
+                    )
             except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
                 await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
                 logger.warning("failed to remove stalled torrent %s: %s", r.get("id"), exc)

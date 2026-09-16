@@ -23,7 +23,9 @@ from app.obs.journal import get_journal
 from app.obs.metrics import AVAILABILITY_CHECKS
 from app.services.availability import (
     DEFAULT_MIN_SEEDERS,
+    DEFAULT_RELAX_AFTER_DAYS,
     count_qualifying,
+    effective_min_seeders,
     seeder_filtered_count,
     summarize_rejections,
 )
@@ -152,6 +154,11 @@ async def refresh_availability(
     client = registry.get(instance_id).client
     defaults = await settings_store.get_defaults(db)
     min_seeders = int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS))
+    relax_days = float(defaults.get("seederRelaxAfterDays", DEFAULT_RELAX_AFTER_DAYS))
+    # The floor is per-episode, not per-series: an episode that has been wanted
+    # for weeks has already proved nothing healthier is coming.
+    wanted_since = {(r["season"], r["episode"]): r["wanted_since"]
+                    for r in await place_store.get_for_series(db, tvdb_id)}
     if episodes is None:
         episodes = await _episodes_for_tvdb(client, tvdb_id) or []
     gaps = [e for e in episodes if is_gap(e)]
@@ -163,6 +170,10 @@ async def refresh_availability(
 
     async def check(ep: dict):
         season, epnum = episode_key(ep)
+        floor = effective_min_seeders(
+            min_seeders=min_seeders, wanted_since=wanted_since.get((season, epnum)),
+            now=now, relax_after_days=relax_days,
+        )
         cached = await avail_cache.get_cached(db, instance_id, tvdb_id, season, epnum)
         # A zero-release verdict on an aired episode is cheap to be wrong about
         # (outage, or the release just landed) — trust it for a much shorter
@@ -177,7 +188,7 @@ async def refresh_availability(
         if (
             cached is not None
             and avail_cache.is_fresh(cached["checked_at"], now, effective_ttl)
-            and cached["min_seeders"] == min_seeders
+            and cached["min_seeders"] == floor
         ):
             results.append({
                 "season": season, "episode": epnum,
@@ -191,14 +202,14 @@ async def refresh_availability(
             return
         async with sem:
             releases = await client.releases(ep["id"])
-        qc = count_qualifying(releases, min_seeders)
+        qc = count_qualifying(releases, floor)
         rej = summarize_rejections(releases)
-        filtered = seeder_filtered_count(releases, min_seeders)
+        filtered = seeder_filtered_count(releases, floor)
         if filtered > 0:
-            rej.append({"reason": f"fewer than {min_seeders} seeders", "count": filtered})
+            rej.append({"reason": f"fewer than {floor} seeders", "count": filtered})
         # Capture the best grab candidate now so the reconciler can grab it
         # later without a second indexer search. Trimmed to keep rows small.
-        best = pick_best_torrent(releases, min_seeders)
+        best = pick_best_torrent(releases, floor)
         if best is not None:
             best = {k: best.get(k) for k in ("guid", "indexerId", "seeders", "title")}
         _count_check(instance_id, "qualifies" if qc > 0 else ("zero" if not releases else "rejected"))
@@ -211,7 +222,7 @@ async def refresh_availability(
             db, instance_id=instance_id, tvdb_id=tvdb_id, season=season, episode=epnum,
             qualifies=qc > 0, total_releases=len(releases), qualifying_count=qc,
             rejection_json=json.dumps(rej), checked_at=now.isoformat(),
-            min_seeders=min_seeders,
+            min_seeders=floor,
             best_release_json=json.dumps(best) if best else None,
         )
         results.append({

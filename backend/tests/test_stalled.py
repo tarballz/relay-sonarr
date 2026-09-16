@@ -6,6 +6,7 @@ import httpx
 import respx
 
 from app.db import Database
+from app.services.liveness import TorrentLiveness
 from app.services.poller import sweep_stalled
 from app.store.operations import OperationStore
 from tests.test_chain import A, B, make_registry
@@ -217,3 +218,201 @@ async def test_sweep_respects_per_tick_cap(tmp_path):
 
     removed = await sweep_stalled(reg, db, ops, stalled_days=3, cap=2, now=NOW)
     assert removed == 2
+
+
+# --- liveness-aware fast kill -------------------------------------------------
+
+def _live(hash_, *, seeders=0, metadata=True, peers=0, rate=0, pct=0.0):
+    return TorrentLiveness(hash=hash_.lower(), has_metadata=metadata,
+                           max_seeders=seeders, peers_connected=peers,
+                           rate_download=rate, percent_done=pct)
+
+
+@respx.mock
+async def test_dead_torrent_is_removed_in_hours_not_days(tmp_path):
+    """0 seeders on every tracker: waiting the full stalledDays helps nobody."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"dead": _live("dead")})
+
+    assert removed == 1 and del_route.called
+
+
+@respx.mock
+async def test_dead_torrent_younger_than_dead_hours_is_left(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", added=(NOW - timedelta(hours=3)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"dead": _live("dead")})
+
+    assert removed == 0 and not del_route.called
+
+
+@respx.mock
+async def test_live_but_idle_torrent_still_waits_the_full_threshold(tmp_path):
+    """A healthy swarm we simply haven't connected to yet keeps the slow clock."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="LIVE", added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"live": _live("live", seeders=30)})
+
+    assert removed == 0 and not del_route.called
+
+
+@respx.mock
+async def test_near_complete_download_keeps_the_long_grace(tmp_path):
+    """Discarding 98% of a download is the expensive mistake, so it outranks
+    both the lowered stalledDays and the dead verdict."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=41, size=1000, sizeleft=20, downloadId="ALMOST",
+               added=(NOW - timedelta(days=30)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/41").mock(return_value=httpx.Response(200))
+    live = {"almost": _live("almost", pct=0.98)}
+
+    await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                        dead_hours=6, liveness=live)
+    # Frozen for two days — past the lowered stalledDays, inside the 3-day grace.
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25,
+                                  now=NOW + timedelta(days=2), dead_hours=6, liveness=live)
+
+    assert removed == 0 and not del_route.called
+
+
+@respx.mock
+async def test_no_liveness_reproduces_the_age_only_behaviour(tmp_path):
+    """Transmission unreachable: the sweep degrades, it does not change verdicts."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    records = [_rec(id=11, downloadId="A1", added=(NOW - timedelta(hours=7)).isoformat()),
+               _rec(id=12, downloadId="A2", added=(NOW - timedelta(days=10)).isoformat())]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+    respx.delete(f"{A}/api/v3/queue/12").mock(return_value=httpx.Response(200))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={})
+
+    assert removed == 1  # only the 10-day-old one; 7h is inside stalled_days=1
+
+
+# --- replace, don't just remove ----------------------------------------------
+
+@respx.mock
+async def test_removal_regrabs_the_best_seeded_replacement(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", episodeId=77,
+               added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+    search = respx.get(f"{A}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"guid": "g1", "indexerId": 1, "title": "weak", "protocol": "torrent",
+         "seeders": 6, "rejected": False},
+        {"guid": "g2", "indexerId": 1, "title": "strong", "protocol": "torrent",
+         "seeders": 31, "rejected": False},
+    ]))
+    grab = respx.post(f"{A}/api/v3/release").mock(return_value=httpx.Response(200, json={}))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"dead": _live("dead")},
+                                  min_seeders=5, regrab_cap=5)
+
+    assert removed == 1
+    # Sonarr's own re-search is suppressed, because we are doing it ourselves.
+    assert del_route.calls.last.request.url.params["skipRedownload"] == "true"
+    assert search.calls.last.request.url.params["episodeId"] == "77"
+    assert json.loads(grab.calls.last.request.content)["guid"] == "g2"
+
+
+@respx.mock
+async def test_season_pack_leaves_the_redownload_to_sonarr(tmp_path):
+    """One torrent covering many episodes would mean one search per episode."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    recs = [_rec(id=11, downloadId="PACK", episodeId=1,
+                 added=(NOW - timedelta(hours=7)).isoformat()),
+            _rec(id=12, downloadId="PACK", episodeId=2,
+                 added=(NOW - timedelta(hours=7)).isoformat())]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(recs))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+    search = respx.get(f"{A}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"pack": _live("pack")},
+                                  min_seeders=5, regrab_cap=5)
+
+    assert removed == 1
+    assert del_route.calls.last.request.url.params["skipRedownload"] == "false"
+    assert not search.called
+
+
+@respx.mock
+async def test_regrab_cap_bounds_the_interactive_searches(tmp_path):
+    """An interactive search takes 55-95s and Prowlarr 429s under bursts, so the
+    re-grab budget is far smaller than the removal cap."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    recs = [_rec(id=10 + n, downloadId=f"D{n}", episodeId=100 + n,
+                 added=(NOW - timedelta(hours=7)).isoformat()) for n in range(4)]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(recs))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    for n in range(4):
+        respx.delete(f"{A}/api/v3/queue/{10 + n}").mock(return_value=httpx.Response(200))
+    search = respx.get(f"{A}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    liveness = {f"d{n}": _live(f"d{n}") for n in range(4)}
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness=liveness,
+                                  min_seeders=5, regrab_cap=2)
+
+    assert removed == 4
+    assert len(search.calls) == 2
+
+
+@respx.mock
+async def test_removal_still_succeeds_when_the_regrab_fails(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", episodeId=77,
+               added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+    respx.get(f"{A}/api/v3/release").mock(return_value=httpx.Response(500))
+
+    removed = await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                                  dead_hours=6, liveness={"dead": _live("dead")},
+                                  min_seeders=5, regrab_cap=5)
+
+    assert removed == 1

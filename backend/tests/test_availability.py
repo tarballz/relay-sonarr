@@ -1,14 +1,20 @@
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import respx
 
 from app.config import Config, InstanceConfig
 from app.services.availability import (
+    DEFAULT_MIN_SEEDERS,
     check_availability,
     count_qualifying,
+    effective_min_seeders,
     seeder_filtered_count,
     summarize_rejections,
 )
 from app.sonarr.registry import Registry
+
+NOW_TS = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
 
 B = "http://10.0.0.2:8990"
 
@@ -232,3 +238,35 @@ async def test_check_availability_default_min_seeders_zero_unchanged():
     assert result["available"] is True
     assert result["seederFiltered"] == 0
     assert result["rejectionSummary"] == []
+
+
+# --- effective_min_seeders ----------------------------------------------------
+
+def test_default_min_seeders_is_five():
+    """Documents the decision; fails loudly if someone quietly reverts it."""
+    assert DEFAULT_MIN_SEEDERS == 5
+
+
+def _eff(wanted_since, *, floor=5, days=3.0):
+    return effective_min_seeders(min_seeders=floor, wanted_since=wanted_since,
+                                 now=NOW_TS, relax_after_days=days)
+
+
+def test_a_freshly_wanted_episode_keeps_the_floor():
+    assert _eff((NOW_TS - timedelta(days=1)).isoformat()) == 5
+
+
+def test_a_long_wanted_episode_relaxes_to_best_available():
+    assert _eff((NOW_TS - timedelta(days=30)).isoformat()) == 1
+
+
+def test_no_wanted_since_keeps_the_floor():
+    assert _eff(None) == 5
+
+
+def test_relax_after_zero_days_never_relaxes():
+    assert _eff((NOW_TS - timedelta(days=99)).isoformat(), days=0) == 5
+
+
+def test_unparseable_wanted_since_keeps_the_floor():
+    assert _eff("not-a-timestamp") == 5

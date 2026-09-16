@@ -8,11 +8,18 @@ non-rejected release for a representative episode.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.sonarr.registry import Registry
 
 
 # Default seeder threshold for the gate; 0 disables it (legacy behavior).
-DEFAULT_MIN_SEEDERS = 3
+DEFAULT_MIN_SEEDERS = 5
+
+# How long an episode may sit wanted before the floor gives way to
+# "best available". Old back-catalogue legitimately tops out at a handful of
+# seeders, so a permanent hard floor would strand it forever.
+DEFAULT_RELAX_AFTER_DAYS = 3.0
 
 # Release titles ending in an executable extension are malware fakes (seen
 # live: "From.S04E06.1080p.WEB.h264-ETH.scr"). Seeder counts don't catch these
@@ -25,6 +32,28 @@ def looks_dangerous(release: dict) -> bool:
     """True when the release/queue-item title is an executable fake."""
     title = (release.get("title") or "").strip().lower()
     return title.endswith(DANGEROUS_EXTENSIONS)
+
+
+def effective_min_seeders(*, min_seeders: int, wanted_since: str | None,
+                          now: datetime, relax_after_days: float) -> int:
+    """The seeder floor to apply to one episode right now.
+
+    ``min_seeders`` while the episode is fresh, then 1 — "the best that exists" —
+    once it has been wanted longer than ``relax_after_days``. Preferring a
+    healthy release when one exists, and accepting a thin one when none does,
+    is the difference between a library that fills and one that stalls.
+
+    ``relax_after_days <= 0`` disables relaxation entirely.
+    """
+    if relax_after_days <= 0 or not wanted_since:
+        return min_seeders
+    try:
+        since = datetime.fromisoformat(str(wanted_since).replace("Z", "+00:00"))
+    except ValueError:
+        return min_seeders
+    if (now - since).total_seconds() > relax_after_days * 86400.0:
+        return 1
+    return min_seeders
 
 
 def _meets_seeders(release: dict, min_seeders: int) -> bool:

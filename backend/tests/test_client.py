@@ -260,3 +260,19 @@ async def test_grab_release_posts_guid_and_indexer(client):
     body = _json.loads(route.calls.last.request.content)
     assert body == {"guid": "abc", "indexerId": 5}
     assert result["guid"] == "abc"
+
+
+@respx.mock
+async def test_delete_queue_item_can_skip_sonarrs_own_redownload(client):
+    """When Relay re-grabs itself, Sonarr's automatic re-search must not race it —
+    it re-picks by quality and lands on another dead release."""
+    route = respx.delete(f"{BASE}/api/v3/queue/42").mock(return_value=httpx.Response(200))
+    await client.delete_queue_item(42, skip_redownload=True)
+    assert route.calls.last.request.url.params["skipRedownload"] == "true"
+
+
+@respx.mock
+async def test_delete_queue_item_defaults_to_sonarr_redownloading(client):
+    route = respx.delete(f"{BASE}/api/v3/queue/7").mock(return_value=httpx.Response(200))
+    await client.delete_queue_item(7)
+    assert route.calls.last.request.url.params["skipRedownload"] == "false"

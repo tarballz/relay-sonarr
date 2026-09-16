@@ -24,13 +24,18 @@ def pick_best_torrent(releases: list[dict], min_seeders: int = 0) -> dict | None
     Stable sort on seeders only: Sonarr returns releases pre-sorted by its own
     preference (quality profile, format score), so ties keep that ranking —
     no need to reimplement quality weighting here.
+
+    The floor is never below 1: a release with no seeders is not a candidate at
+    any threshold. ``effective_min_seeders`` is how callers relax the floor for
+    an episode that has gone unwanted-for-too-long.
     """
+    floor = max(min_seeders, 1)
     candidates = [
         r for r in releases
         if not r.get("rejected", False)
         and not looks_dangerous(r)
         and r.get("protocol") == "torrent"
-        and (r.get("seeders") or 0) >= max(min_seeders, 1)
+        and (r.get("seeders") or 0) >= floor
     ]
     if not candidates:
         return None
@@ -74,3 +79,32 @@ async def grab_then_search(
         searched = True
 
     return {"grabbed": grabbed, "release": best if grabbed else None, "searched": searched}
+
+
+async def regrab_episode(client, *, episode_id: int, min_seeders: int) -> dict | None:
+    """Search one episode and grab the healthiest torrent. Never raises.
+
+    Used to *replace* a download that was just removed, rather than leaving the
+    episode to Sonarr's own re-search — which ranks by quality and happily picks
+    another dead release.
+
+    Ordering matters: this must run only after the dead queue item is gone. While
+    it is still queued Sonarr marks every alternative
+    ``rejected: "Release in queue already meets cutoff"``, and ``pick_best_torrent``
+    filters rejected releases out, so the search would find nothing to grab.
+    """
+    try:
+        releases = await client.releases(episode_id)
+    except Exception as exc:  # noqa: BLE001 - a replacement is best-effort
+        logger.warning("re-grab search for episode %s failed: %s", episode_id, exc)
+        return None
+
+    best = pick_best_torrent(releases, min_seeders)
+    if best is None:
+        return None
+    try:
+        await client.grab_release(best["guid"], best["indexerId"])
+    except Exception as exc:  # noqa: BLE001 - see above
+        logger.warning("re-grab of %r failed: %s", best.get("title"), exc)
+        return None
+    return best

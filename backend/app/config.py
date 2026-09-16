@@ -42,10 +42,25 @@ class FallbackStep(BaseModel):
     root_folder: str | None = None
 
 
+class DownloadClientConfig(BaseModel):
+    """The torrent client, read-only, for liveness only.
+
+    Sonarr reports a torrent with no metadata and no seeders as "ok", so the
+    only way to tell a slow download from a dead one is to ask the client. The
+    whole block is optional: without it the sweeps fall back to age alone.
+    """
+
+    type: str = "transmission"
+    url: str
+    username: str | None = None
+    password: str | None = None
+
+
 class Config(BaseModel):
     instances: list[InstanceConfig]
     # Ordered fallback steps keyed by the *starting* instance id.
     fallback_chains: dict[str, list[FallbackStep]] = {}
+    download_client: DownloadClientConfig | None = None
 
 
 def _expand(value: str, env: dict[str, str]) -> str:
@@ -83,4 +98,20 @@ def load_config(path: str | Path, env: dict[str, str] | None = None) -> Config:
             )
             for step in steps
         ]
-    return Config(instances=instances, fallback_chains=chains)
+    # Expand only the keys that are actually present — an absent optional
+    # credential must not look like a missing environment variable.
+    dc_raw = raw.get("download_client") or None
+    download_client = None
+    if dc_raw:
+        def opt(key: str) -> str | None:
+            value = dc_raw.get(key)
+            return _expand(value, env) if value else None
+
+        download_client = DownloadClientConfig(
+            type=dc_raw.get("type", "transmission"),
+            url=_expand(dc_raw["url"], env),
+            username=opt("username"),
+            password=opt("password"),
+        )
+    return Config(instances=instances, fallback_chains=chains,
+                  download_client=download_client)

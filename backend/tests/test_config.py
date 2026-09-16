@@ -82,3 +82,55 @@ def test_parses_optional_default_root_folder(tmp_path):
 def test_default_root_folder_absent_is_none(tmp_path):
     cfg = load_config(_write(tmp_path), env={"SONARR_1080P_API_KEY": "x", "SONARR_4K_API_KEY": "y"})
     assert all(i.default_root_folder is None for i in cfg.instances)
+
+
+RAW_WITH_DOWNLOAD_CLIENT = """
+instances:
+  - id: "1080p"
+    name: "Sonarr 1080p"
+    url: "http://192.168.1.10:8989"
+    api_key: "${SONARR_1080P_API_KEY}"
+download_client:
+  type: transmission
+  url: "http://192.168.1.10:9091/transmission/rpc"
+  username: "${TRANSMISSION_USER}"
+  password: "${TRANSMISSION_PASS}"
+"""
+
+
+def test_download_client_absent_is_none(tmp_path):
+    """The block is optional: without it Relay behaves exactly as before."""
+    cfg = load_config(_write(tmp_path), env={"SONARR_1080P_API_KEY": "x", "SONARR_4K_API_KEY": "y"})
+    assert cfg.download_client is None
+
+
+def test_parses_download_client_and_expands_credentials(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(RAW_WITH_DOWNLOAD_CLIENT)
+    cfg = load_config(p, env={"SONARR_1080P_API_KEY": "x",
+                              "TRANSMISSION_USER": "tu", "TRANSMISSION_PASS": "tp"})
+    assert cfg.download_client.type == "transmission"
+    assert cfg.download_client.url == "http://192.168.1.10:9091/transmission/rpc"
+    assert cfg.download_client.username == "tu"
+    assert cfg.download_client.password == "tp"
+
+
+RAW_DOWNLOAD_CLIENT_NO_CREDS = """
+instances:
+  - id: "1080p"
+    name: "Sonarr 1080p"
+    url: "http://192.168.1.10:8989"
+    api_key: "${SONARR_1080P_API_KEY}"
+download_client:
+  type: transmission
+  url: "http://192.168.1.10:9091/transmission/rpc"
+"""
+
+
+def test_download_client_credentials_are_optional(tmp_path):
+    """The live Transmission has no auth; absent keys must not trip _expand()."""
+    p = tmp_path / "config.yaml"
+    p.write_text(RAW_DOWNLOAD_CLIENT_NO_CREDS)
+    cfg = load_config(p, env={"SONARR_1080P_API_KEY": "x"})
+    assert cfg.download_client.username is None
+    assert cfg.download_client.password is None

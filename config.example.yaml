@@ -26,3 +26,15 @@ fallback_chains:
     - instance: "1080p"        # try 1080p with its default profile (e.g. HD-1080p)
     - instance: "1080p"        # then re-search 1080p with a permissive SD profile
       profile: "SD"
+
+# Optional. Relay reads the torrent client's RPC directly for per-torrent liveness
+# (metadata, tracker seeder counts, connected peers) because Sonarr's queue can't
+# tell a dead torrent from a slow one — it reports both as trackedDownloadStatus
+# "ok". With this configured, a torrent with no metadata or zero seeders on every
+# tracker is removed and replaced in hours instead of days. Omit the block and
+# Relay behaves exactly as before, falling back to age-based stall detection.
+# download_client:
+#   type: transmission
+#   url: "http://192.168.1.10:9091/transmission/rpc"
+#   username: "${TRANSMISSION_USER}"      # omit both if the RPC has no auth
+#   password: "${TRANSMISSION_PASS}"

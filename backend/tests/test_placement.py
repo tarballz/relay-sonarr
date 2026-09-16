@@ -467,3 +467,67 @@ def test_plan_refresh_honors_configured_empty_release_ttl(tmp_path):
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_registry, None)
+
+
+# --- the seeder floor relaxes for episodes that have waited ------------------
+
+async def _want_since(db, since):
+    """Seed the one gap episode (S1E2) as wanted since a given moment."""
+    await place_store.upsert(
+        db, tvdb_id=TVDB, season=1, episode=2, desired_tier="4k",
+        obtained_tier=None, state="wanted", reason=None,
+        updated_at=since.isoformat(), wanted_since=since.isoformat(),
+    )
+
+
+@respx.mock
+async def test_thin_swarm_qualifies_once_an_episode_has_waited(tmp_path):
+    """Black Sails S04 tops out at 4 seeders — a permanent floor of 5 strands it."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 4, "guid": "g", "indexerId": 1},
+    ]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 3})
+    await _want_since(db, datetime.now(timezone.utc) - timedelta(days=30))
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["qualifies"] is True
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    # The *effective* floor is cached, so crossing the boundary self-invalidates.
+    assert cached["min_seeders"] == 1
+
+
+@respx.mock
+async def test_thin_swarm_is_rejected_while_the_episode_is_still_fresh(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 4, "guid": "g", "indexerId": 1},
+    ]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 3})
+    await _want_since(db, datetime.now(timezone.utc) - timedelta(hours=6))
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["qualifies"] is False
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["min_seeders"] == 5
+
+
+@respx.mock
+async def test_relax_disabled_keeps_the_floor_forever(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 4},
+    ]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 5, "seederRelaxAfterDays": 0})
+    await _want_since(db, datetime.now(timezone.utc) - timedelta(days=365))
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["qualifies"] is False
