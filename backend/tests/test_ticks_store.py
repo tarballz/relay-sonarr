@@ -59,3 +59,19 @@ async def test_execute_batch_and_count(tmp_path):
     )
     assert len(ids) == 2 and ids[1] == ids[0] + 1
     assert await db.execute_count("DELETE FROM meta WHERE key IN ('a', 'b')") == 2
+
+
+def test_tick_stats_track_degraded_availability_checks_separately():
+    """A check skipped because indexers were down is neither a cache hit nor a
+    genuine zero — counting it as zero would fire the zero-spike alarm for a
+    condition we now handle."""
+    from app.obs.stats import TickStats
+    s = TickStats()
+    s.availability("1080p", "zero")
+    s.availability("1080p", "degraded")
+    s.availability("1080p", "cached")
+    out = s.to_phases()["availability"]
+    assert out["zero"] == {"1080p": 1}
+    assert out["degraded"] == {"1080p": 1}
+    assert out["cached"] == 1
+    assert out["live"] == 1          # the degraded one never reached an indexer

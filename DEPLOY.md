@@ -54,6 +54,38 @@ So a host/LAN request can't bypass Access by hitting `:8088` directly:
 
 ## Operations
 
+### Download-client liveness (optional but recommended)
+
+Sonarr reports a torrent with no metadata and no seeders as
+`trackedDownloadStatus: "ok"`, so on its own Relay cannot tell a dead download from
+a slow one. Point it at the torrent client's RPC and it can:
+
+```yaml
+# config.yaml — read-only; Relay never removes a torrent here, it goes through
+# Sonarr's queue DELETE so the release is blocklisted too.
+download_client:
+  type: transmission
+  url: "http://192.168.1.10:9091/transmission/rpc"
+  # username: "${TRANSMISSION_USER}"   # omit both if the RPC has no auth
+  # password: "${TRANSMISSION_PASS}"
+```
+
+With it configured, a torrent that has fetched no metadata or shows zero seeders on
+every tracker is removed after `deadHours` (6) instead of waiting out `stalledDays`,
+and Relay grabs the best-seeded replacement itself. Omit the block and everything
+falls back to the age-only behavior — nothing errors.
+
+Tuning lives in **Settings → Reconciler defaults**, not here. `regrabCap` (5/tick)
+is deliberately small: each replacement costs a real interactive search, and bursts
+earn a Prowlarr 429.
+
+### Reconciler interval
+
+`RECONCILER_INTERVAL_S` in `.env` (default 1800). Ticks are lock-serialized, so if a
+tick routinely runs longer than the interval the loop simply never idles — which also
+denies the indexers the quiet period their failure backoff needs. Check
+`durationMs` in `GET /api/ticks`; if it approaches the interval, raise this.
+
 ### Health monitoring
 
 - **`GET /healthz`** returns the reconciler snapshot and responds **503** when the

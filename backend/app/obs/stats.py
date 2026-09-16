@@ -13,10 +13,16 @@ class TickStats:
     live: dict = field(default_factory=dict)     # instance -> live availability checks
     cached: dict = field(default_factory=dict)   # instance -> cache hits
     zero: dict = field(default_factory=dict)     # instance -> live checks with 0 releases
+    degraded: dict = field(default_factory=dict)  # instance -> checks discarded (indexers down)
 
     def availability(self, instance_id: str, result: str) -> None:
         if result == "cached":
             self.cached[instance_id] = self.cached.get(instance_id, 0) + 1
+            return
+        if result == "degraded":
+            # Not a live verdict: the search reached no working indexer, so it
+            # must not count toward the zero-spike ratio it would otherwise skew.
+            self.degraded[instance_id] = self.degraded.get(instance_id, 0) + 1
             return
         self.live[instance_id] = self.live.get(instance_id, 0) + 1
         if result == "zero":
@@ -37,5 +43,6 @@ class TickStats:
             "cached": sum(self.cached.values()),
             "liveBy": dict(self.live),
             "zero": dict(self.zero),
+            "degraded": dict(self.degraded),
         }
         return out

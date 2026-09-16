@@ -23,6 +23,7 @@ DOWNLOAD_CLIENT_ERROR = "download.client_error"
 
 AVAILABILITY_CHANGED = "availability.changed"
 AVAILABILITY_ZERO_SPIKE = "availability.zero_spike"
+AVAILABILITY_INDEXERS_DEGRADED = "availability.indexers_degraded"
 
 INSTANCE_DOWN = "instance.down"
 INSTANCE_UP = "instance.up"

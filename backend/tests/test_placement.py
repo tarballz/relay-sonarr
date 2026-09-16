@@ -629,3 +629,100 @@ def test_verdict_reuse_rules():
     # filter at all — a floor of 0, so the same monotonicity applies.
     assert ok(None, False, 5) is True   # no filter found nothing -> a filter won't
     assert ok(None, True, 5) is False   # found something unfiltered -> may flip
+
+
+# --- an outage is not a fact about the episode --------------------------------
+
+def _mock_health(base, entries):
+    respx.get(f"{base}/api/v3/health").mock(return_value=httpx.Response(200, json=entries))
+
+
+INDEXERS_DOWN = [{"source": "IndexerStatusCheck", "type": "warning",
+                  "message": "Indexers unavailable due to failures: Uindex"}]
+
+
+@respx.mock
+async def test_empty_search_during_an_indexer_outage_is_not_recorded(tmp_path):
+    """Zero releases while indexers are down means "we couldn't ask", not
+    "nothing exists" — caching it marks the episode unavailable for hours."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_health(B, INDEXERS_DOWN)
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["unknown"] is True
+    assert rows[0]["qualifies"] is False
+    # Nothing cached, so the next tick asks again instead of waiting out a TTL.
+    assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is None
+
+
+@respx.mock
+async def test_empty_search_with_healthy_indexers_is_still_recorded(tmp_path):
+    """The regression fence: a genuine "nothing exists" must still be cached."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_health(B, [{"source": "RootFolderCheck", "type": "warning", "message": "x"}])
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0].get("unknown") is not True
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    assert cached is not None and cached["total_releases"] == 0
+
+
+@respx.mock
+async def test_a_non_empty_result_is_trusted_even_while_degraded(tmp_path):
+    """Releases came back, so the indexers that matter clearly answered."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
+        {"rejected": False, "protocol": "torrent", "seeders": 30, "guid": "g", "indexerId": 1},
+    ]))
+    _mock_health(B, INDEXERS_DOWN)
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0]["qualifies"] is True
+    assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is not None
+
+
+@respx.mock
+async def test_unreachable_health_endpoint_keeps_the_old_behaviour(tmp_path):
+    """If we can't tell, don't invent an outage — degrade to what we did before."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{B}/api/v3/health").mock(return_value=httpx.Response(500))
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0].get("unknown") is not True
+    assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is not None
+
+
+@respx.mock
+async def test_health_is_checked_once_per_refresh_not_once_per_episode(tmp_path):
+    reg = make_registry()
+    respx.get(f"{B}/api/v3/series").mock(
+        return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "X"}]))
+    respx.get(f"{B}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 1000 + n, "seasonNumber": 1, "episodeNumber": n,
+         "monitored": True, "hasFile": False} for n in range(1, 7)
+    ]))
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    route = respx.get(f"{B}/api/v3/health").mock(
+        return_value=httpx.Response(200, json=INDEXERS_DOWN))
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert len(rows) == 6
+    assert all(r["unknown"] for r in rows)
+    assert route.call_count == 1

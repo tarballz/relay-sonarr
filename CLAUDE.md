@@ -36,6 +36,8 @@ There is no linter configured. `pytest` uses `asyncio_mode = "auto"` (no `@pytes
   compose bind-mounts it read-only). Tests bypass all of this via dependency override (below).
 - Adding a third instance is a **config edit, not a code change** — everything downstream
   iterates `registry.all()` rather than naming instances.
+- **`download_client`** (optional) points at Transmission's RPC for per-torrent liveness.
+  Omit it and every liveness path no-ops back to age-only behavior — never crashes.
 
 ## Architecture
 
@@ -86,24 +88,51 @@ same coroutines with the default no-op emit.
 ### Autonomous reconciler
 
 The user declares desired state per series; `reconciler.py` drives reality toward it on a
-background loop (`run()` → guarded `_run_once()` → `tick()`, default every 30 min).
+background loop (`run()` → guarded `_run_once()` → `tick()`; `RECONCILER_INTERVAL_S`,
+default 30 min).
 
 - **Persistence** — `db.py` (stdlib `sqlite3`, one lock-serialized connection, WAL) with
   repositories in `store/*`. Migrations are additive: `CREATE TABLE IF NOT EXISTS`,
   `_ensure_column`, and `_run_once` for one-time data repairs keyed in `meta`.
 - **Tick** — `poller.poll_all` (queue + history → placement state transitions, failure backoff),
-  then the sweeps (`sweep_stalled`, `sweep_dangerous`, `sweep_search_stalls`), then
-  `reconcile_series` per non-paused `series_intent`.
+  then `liveness.liveness_map` (one Transmission call), then the sweeps (`sweep_stalled`,
+  `sweep_dangerous`, `sweep_search_stalls`), then `reconcile_series` per non-paused
+  `series_intent`. Ticks are lock-serialized, so one running longer than
+  `RECONCILER_INTERVAL_S` just means the loop never idles.
+- **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
+  metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
+  = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`
+  means *no tracker has answered yet* — unknown, never dead. `sweep_stalled` reaps dead
+  torrents in `deadHours` instead of `stalledDays`, never touches one moving bytes, spares
+  downloads past `nearCompletePct`, and re-grabs a replacement itself
+  (`grab.regrab_episode`, `skipRedownload=true`) because Sonarr's own re-search ranks by
+  quality and re-picks another dead release.
 - **Placement** (`services/placement.py`) — `refresh_availability` runs interactive release
   searches on gap episodes (TTL-cached in `availability_cache`; zero-release verdicts on aired
-  episodes use the short `emptyReleaseTtlMinutes`); `compute_plan` joins episodes across
-  instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
+  episodes use the short `emptyReleaseTtlMinutes`). Two rules exist because each was learned
+  the expensive way:
+  **(1) cache reuse is monotonic, not exact** (`_verdict_survives_floor_change`) — a stricter
+  seeder floor can only turn a "yes" into a "no" and a looser one only a "no" into a "yes", so
+  most threshold changes reuse the cached verdict. Invalidating on any change turned the
+  default moving 3→5 into 1540 re-searches (~7.5h of indexer traffic in one tick).
+  **(2) an empty result is only trusted when the indexers were up** — `health.indexers_degraded`
+  gates it; while indexers are failing, nothing is cached and the episode stays `wanted`, so an
+  outage is never recorded as "unavailable". Public-tracker indexers cycle in and out of failure
+  constantly, so this is the normal case, not an incident.
+  `compute_plan` then joins episodes across instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
   failed/imported/unmonitored`).
 - **Identity** — cross-instance episode identity is always `(tvdb_id, season, episode)`; Sonarr
   `seriesId`/episode ids are per-instance and must be mapped to tvdb before persisting.
 - **Policy & settings** — `policy.py` (per-series `SeriesPolicy`), runtime defaults in
-  `meta.default_policy` via `store/settings.py`. Env kill switches: `RECONCILER_ENABLED`,
-  `STALLED_CLEANUP_ENABLED`, `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`.
+  `meta.default_policy` via `store/settings.py` — `minSeeders` (5), `stalledDays` (1),
+  `deadHours` (6), `regrabCap` (5), `nearCompletePct` (95), `seederRelaxAfterDays` (3),
+  `emptyReleaseTtlMinutes`. The seeder floor is **per-episode and expires**
+  (`availability.effective_min_seeders`): thin-swarm back-catalogue would otherwise be stranded
+  forever by a hard floor. Defaults live as module constants next to the code that reads them;
+  **`Settings.jsx` sends `{...data, ...form}` with its own `??` fallbacks, so any default change
+  must ship with the frontend or the first "Save defaults" click freezes the old value.**
+  Env knobs: `RECONCILER_ENABLED`, `RECONCILER_INTERVAL_S`, `STALLED_CLEANUP_ENABLED`,
+  `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`.
 - **Health** — `GET /api/reconciler/status`; `/healthz` returns 503 when the loop is stale.
 
 ### Observability (`app/obs/`)
@@ -149,5 +178,25 @@ driven deterministically with
 calls. When exercising orchestration timing, pass a fake `sleep` and small `wait_attempts`
 instead of real delays.
 
+Transmission's 409 session-id handshake is mocked with an ordered `side_effect`:
+`respx.post(RPC).mock(side_effect=[httpx.Response(409, headers={"X-Transmission-Session-Id":
+"s"}), ok_response])` (see `tests/test_transmission.py`).
+
 Frontend builds need no host Node: `docker run --rm -v "$PWD/frontend":/fe -w /fe node:20-alpine
 sh -c "npm install && npm run build"`.
+
+## Gotchas
+
+- **A "silent" tick is almost always slow searches, not a hang.** httpx logs a request only once
+  its response lands, and an interactive search takes 55-180s
+  (`SonarrClient.RELEASE_SEARCH_TIMEOUT`). Blocked coroutines burn no CPU, and a socket awaiting
+  a response shows `Send-Q`/`Recv-Q` of 0 — so idle CPU + quiet logs + "empty" sockets all look
+  like a deadlock and are not. `py-spy` cannot show asyncio tasks; reproduce locally and dump
+  with `asyncio.wait_for(asyncio.shield(task), n)` then `task.print_stack()`.
+- `refresh_availability` accepts a `limit` the reconciler never passes, so a tick's search volume
+  is unbounded — worth remembering before anything that invalidates cache in bulk.
+- The container owns `data/relay.db` as root; work on a copy via
+  `docker cp sonarr-unified:/data/relay.db <tmp>`.
+- Updating a *failing* Sonarr indexer needs `PUT /api/v3/indexer/{id}?forceSave=true` — the
+  add-time validation rejects it otherwise.
+

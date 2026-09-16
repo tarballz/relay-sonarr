@@ -33,6 +33,9 @@ def test_tick_stats_counts_and_zero_spikes():
     assert s.zero_spikes() == {"4k": (9, 10)}   # 1080p has too few live checks
     assert s.to_phases()["availability"] == {
         "live": 13, "cached": 1, "liveBy": {"4k": 10, "1080p": 3}, "zero": {"4k": 9, "1080p": 3},
+        # Checks discarded because the instance's indexers were down — kept out of
+        # live/zero so an outage we handled can't skew the zero-spike ratio.
+        "degraded": {},
     }
 
 

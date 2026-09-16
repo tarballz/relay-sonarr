@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 
 from app.episodes import episode_key, find_series_by_tvdb, is_gap
@@ -31,11 +32,14 @@ from app.services.availability import (
 )
 from app.services.fanout import gather_instances
 from app.services.grab import pick_best_torrent
+from app.services.health import indexers_degraded
 from app.services.status import derive_status
 from app.sonarr.registry import Registry
 from app.store import availability as avail_cache
 from app.store import placements as place_store
 from app.store import settings as settings_store
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TTL = 6 * 3600  # seconds
 
@@ -192,6 +196,35 @@ async def refresh_availability(
     sem = asyncio.Semaphore(concurrency)
     results: list[dict] = []
 
+    # Indexers on public trackers cycle in and out of failure constantly (rate
+    # limits, Cloudflare, dead mirrors). While they are down an interactive
+    # search returns quickly with zero releases, which is indistinguishable from
+    # "no release exists" — and caching that marks the episode unavailable for
+    # hours. Resolved at most once per refresh, and only when an empty result
+    # actually needs explaining, so healthy runs pay nothing for it.
+    _down: dict = {}
+    _down_lock = asyncio.Lock()
+
+    async def indexers_are_down() -> bool:
+        async with _down_lock:
+            if "value" not in _down:
+                try:
+                    down = indexers_degraded(await client.health())
+                except Exception as exc:  # noqa: BLE001
+                    # Can't tell -> don't invent an outage; behave as before.
+                    logger.warning("health check failed for %s: %s", instance_id, exc)
+                    down = False
+                _down["value"] = down
+                if down:
+                    get_journal().emit(
+                        kinds.AVAILABILITY_INDEXERS_DEGRADED,
+                        f"{instance_id} reports failing indexers — empty search results "
+                        f"will be discarded rather than cached as unavailable",
+                        level="warn", source="placement", instance_id=instance_id,
+                        tvdb_id=tvdb_id,
+                    )
+            return _down["value"]
+
     async def check(ep: dict):
         season, epnum = episode_key(ep)
         floor = effective_min_seeders(
@@ -227,6 +260,16 @@ async def refresh_availability(
             return
         async with sem:
             releases = await client.releases(ep["id"])
+        if not releases and await indexers_are_down():
+            # Record nothing: with no cached row, compute_plan treats the episode
+            # as never checked and leaves it wanted, so the next tick retries.
+            _count_check(instance_id, "degraded")
+            results.append({
+                "season": season, "episode": epnum, "qualifies": False,
+                "qualifyingCount": 0, "totalReleases": 0,
+                "rejectionSummary": [], "cached": False, "unknown": True,
+            })
+            return
         qc = count_qualifying(releases, floor)
         rej = summarize_rejections(releases)
         filtered = seeder_filtered_count(releases, floor)

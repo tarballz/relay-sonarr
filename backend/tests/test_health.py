@@ -86,3 +86,42 @@ def test_manual_tick_endpoint_returns_result_or_409():
         assert TestClient(app).post("/api/reconcile/tick").status_code == 409
     finally:
         _teardown()
+
+
+# --- indexer degradation ------------------------------------------------------
+
+from app.services.health import indexers_degraded  # noqa: E402
+
+
+def _h(source, type_="warning", message="..."):
+    return {"source": source, "type": type_, "message": message}
+
+
+def test_no_health_issues_is_not_degraded():
+    assert indexers_degraded([]) is False
+
+
+def test_indexer_status_check_is_degraded():
+    assert indexers_degraded([_h("IndexerStatusCheck")]) is True
+
+
+def test_indexer_long_term_status_check_is_degraded():
+    assert indexers_degraded([_h("IndexerLongTermStatusCheck")]) is True
+
+
+def test_unrelated_warnings_are_not_degraded():
+    """A root-folder or update warning says nothing about search results."""
+    assert indexers_degraded([_h("RootFolderCheck"), _h("UpdateCheck")]) is False
+
+
+def test_an_indexer_error_counts_too():
+    assert indexers_degraded([_h("IndexerSearchCheck", "error")]) is True
+
+
+def test_an_informational_indexer_notice_does_not_count():
+    """Sonarr uses 'ok'/'notice' for things that aren't failures."""
+    assert indexers_degraded([_h("IndexerStatusCheck", "ok")]) is False
+
+
+def test_missing_fields_are_tolerated():
+    assert indexers_degraded([{}, {"source": None}, {"type": "warning"}]) is False
