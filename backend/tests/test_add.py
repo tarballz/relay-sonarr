@@ -39,6 +39,15 @@ def test_build_add_payload_sets_required_fields_and_keeps_lookup_data():
     assert payload["addOptions"]["searchForMissingEpisodes"] is True
 
 
+def test_build_add_payload_enables_season_folders():
+    """Sonarr's API defaults seasonFolder to false when the POST omits it (and a
+    lookup result can carry false), which dumped every Relay-added series' episodes
+    flat into the series folder instead of 'Season N' subfolders."""
+    for series in ({"tvdbId": 1}, {"tvdbId": 1, "seasonFolder": False}):
+        payload = build_add_payload(series, 1, "/tv")
+        assert payload["seasonFolder"] is True
+
+
 def test_build_add_payload_search_now_false():
     payload = build_add_payload({"tvdbId": 1}, 1, "/tv", monitored=True, search_now=False)
     assert payload["addOptions"]["searchForMissingEpisodes"] is False
