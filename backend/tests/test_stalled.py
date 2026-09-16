@@ -416,3 +416,41 @@ async def test_removal_still_succeeds_when_the_regrab_fails(tmp_path):
                                   min_seeders=5, regrab_cap=5)
 
     assert removed == 1
+
+
+@respx.mock
+async def test_removal_message_says_who_is_replacing_it(tmp_path):
+    """skipRedownload=true means Sonarr is NOT re-searching — don't claim it is."""
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", episodeId=77,
+               added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+    respx.get(f"{A}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+
+    await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                        dead_hours=6, liveness={"dead": _live("dead")},
+                        min_seeders=5, regrab_cap=5)
+
+    remove_step = (await ops.recent())[0]["steps"][0]
+    assert "Sonarr re-searching" not in remove_step["message"]
+    assert "replacing" in remove_step["message"]
+
+
+@respx.mock
+async def test_removal_message_credits_sonarr_when_it_does_redownload(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    rec = _rec(id=11, downloadId="DEAD", added=(NOW - timedelta(hours=7)).isoformat())
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue([rec]))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    respx.delete(f"{A}/api/v3/queue/11").mock(return_value=httpx.Response(200))
+
+    await sweep_stalled(reg, db, ops, stalled_days=1, cap=25, now=NOW,
+                        dead_hours=6, liveness={"dead": _live("dead")})
+
+    assert "Sonarr re-searching" in (await ops.recent())[0]["steps"][0]["message"]

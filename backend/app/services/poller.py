@@ -424,7 +424,8 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                 await ops.add_step(op_id, {
                     "phase": "remove", "status": "done",
                     "message": f"Removed stalled torrent — {title}, stuck at {pct:.0f}% "
-                               f"for {age_days}d (blocklisted; Sonarr re-searching)",
+                               f"for {age_days}d ({reason}; blocklisted; "
+                               + ("Relay replacing it)" if do_regrab else "Sonarr re-searching)"),
                 })
                 await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
                                  finished_at=now.isoformat())
