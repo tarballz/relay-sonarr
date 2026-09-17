@@ -23,7 +23,7 @@ export const api = {
     get(`/availability?instanceId=${instanceId}&seriesId=${seriesId}`, opts),
   operations: (opts) => get("/operations", opts),
   removeSeries: (instanceId, seriesId, deleteFiles = false, opts) =>
-    del(`/instances/${instanceId}/series/${seriesId}?deleteFiles=${deleteFiles}`, null, opts),
+    del(`/instances/${instanceId}/series/${seriesId}?deleteFiles=${deleteFiles}`, undefined, opts),
   // Reconciler / policy surface.
   libraryStatus: (opts) => get("/library/status", opts),
   plan: (tvdb, opts) => get(`/series/${tvdb}/plan`, opts),
@@ -31,10 +31,10 @@ export const api = {
     get(`/series/${tvdb}/plan?refresh=${encodeURIComponent(target)}`, opts),
   policy: (tvdb, opts) => get(`/series/${tvdb}/policy`, opts),
   setPolicy: (tvdb, body, opts) => put(`/series/${tvdb}/policy`, body, opts),
-  pauseSeries: (tvdb, opts) => post(`/series/${tvdb}/pause`, null, opts),
-  resumeSeries: (tvdb, opts) => post(`/series/${tvdb}/resume`, null, opts),
-  reconcileSeries: (tvdb, opts) => post(`/series/${tvdb}/reconcile`, null, opts),
-  reconcileTick: (opts) => post("/reconcile/tick", null, opts),
+  pauseSeries: (tvdb, opts) => post(`/series/${tvdb}/pause`, undefined, opts),
+  resumeSeries: (tvdb, opts) => post(`/series/${tvdb}/resume`, undefined, opts),
+  reconcileSeries: (tvdb, opts) => post(`/series/${tvdb}/reconcile`, undefined, opts),
+  reconcileTick: (opts) => post("/reconcile/tick", undefined, opts),
   reconcilerStatus: (opts) => get("/reconciler/status", opts),
   defaults: (opts) => get("/settings/defaults", opts),
   setDefaults: (body, opts) => put("/settings/defaults", body, opts),
