@@ -26,3 +26,10 @@ backend/relay.db*
 .idea/
 .DS_Store
 *.log
+
+# Never commit env copies/backups (the .env.example template stays tracked)
+.env.*
+!.env.example
+
+# Stale root-owned build artifacts moved aside during the 5A upgrade
+frontend/*.root-owned-stale/
