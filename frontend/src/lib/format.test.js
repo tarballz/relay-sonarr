@@ -7,12 +7,17 @@ describe("bytes", () => {
     expect(bytes(900)).toBe("900 B");
     expect(bytes(1536)).toBe("1.5 KB");
     expect(bytes(5 * 1024 * 1024)).toBe("5.0 MB");
+    expect(bytes(15 * 1024 * 1024)).toBe("15 MB");
     expect(bytes(2.5 * 1024 ** 3)).toBe("2.5 GB");
   });
 
   it("returns a dash for missing values", () => {
     expect(bytes(null)).toBe("—");
     expect(bytes(undefined)).toBe("—");
+  });
+
+  it("returns a dash for non-numeric values", () => {
+    expect(bytes("abc")).toBe("—");
   });
 });
 

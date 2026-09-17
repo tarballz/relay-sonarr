@@ -3,15 +3,17 @@
 const DASH = "—";
 
 export function bytes(n) {
-  if (n === null || n === undefined || Number.isNaN(n)) return DASH;
+  if (n === null || n === undefined) return DASH;
+  const value = Number(n);
+  if (!Number.isFinite(value)) return DASH;
   const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = Number(n);
+  let scaled = value;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
     unit += 1;
   }
-  return unit === 0 ? `${Math.round(value)} ${units[unit]}` : `${value.toFixed(1)} ${units[unit]}`;
+  return unit === 0 ? `${Math.round(scaled)} ${units[unit]}` : `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[unit]}`;
 }
 
 export function ago(seconds) {

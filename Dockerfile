@@ -1,8 +1,8 @@
 # --- Stage 1: build the React SPA -------------------------------------------
-FROM node:20-alpine AS frontend
+FROM node:22-alpine AS frontend
 WORKDIR /fe
-COPY frontend/package.json ./
-RUN npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 # A red suite fails the image rather than shipping a broken SPA.
 RUN npm test
