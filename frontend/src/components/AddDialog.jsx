@@ -10,6 +10,7 @@ import {
   tierClass,
 } from "../api.js";
 import { TierBadge, Spinner } from "./Shared.jsx";
+import { useToast } from "./ui/Toast.jsx";
 import { useDialog } from "./useDialog.js";
 import ProgressStream from "./ProgressStream.jsx";
 import ResolutionOptions from "./ResolutionOptions.jsx";
@@ -25,7 +26,8 @@ function fanartUrl(series) {
 // quality-profile + root-folder pickers. Adding a single tier that has a
 // configured fallback routes through /smart-add so we can surface the roadblock
 // resolution menu ("no release found — here's how to resolve it").
-export default function AddDialog({ series, instances, fallbackChains, onClose, onToast }) {
+export default function AddDialog({ series, instances, fallbackChains, onClose }) {
+  const toast = useToast();
   const [opts, setOpts] = useState({}); // id -> {profiles, rootFolders, profileId, rootFolderPath}
   const [sel, setSel] = useState({}); // id -> bool
   const [busy, setBusy] = useState(false);
@@ -105,7 +107,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     }
     if (res.status === "split") {
       const to = whereName(res.to?.instanceId);
-      onToast(
+      toast(
         `Split “${series.title}” — ${res.gapCount} missing episode${res.gapCount === 1 ? "" : "s"} ` +
           `now downloading on ${to}; existing episodes kept.`
       );
@@ -116,9 +118,9 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     if (res.status === "added" || res.status === "placed") {
       const where = whereName(res.instanceId);
       const prof = res.qualityProfileName ? ` (${res.qualityProfileName})` : "";
-      onToast(`Downloading “${series.title}” on ${where}${prof} — release found ✓`);
+      toast(`Downloading “${series.title}” on ${where}${prof} — release found ✓`);
     } else {
-      onToast(`Added “${series.title}” to ${fallbackToastName}`);
+      toast(`Added “${series.title}” to ${fallbackToastName}`);
     }
     onClose();
   }
@@ -133,7 +135,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
       },
       onError: (msg) => {
         setStreaming(false);
-        onToast(msg, true);
+        toast(msg, true);
       },
     };
   }
@@ -159,7 +161,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
         runStream(streamFillGaps, o.payload);
         break;
       case "leave":
-        onToast(`Kept “${series.title}” monitored — it'll grab when a release appears.`);
+        toast(`Kept “${series.title}” monitored — it'll grab when a release appears.`);
         onClose();
         break;
       case "remove":
@@ -175,10 +177,10 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
     try {
       await api.removeSeries(confirmRemove.instanceId, confirmRemove.seriesId);
       await queryClient.invalidateQueries({ queryKey: ["series"] });
-      onToast(`Removed “${series.title}” — no release was available.`);
+      toast(`Removed “${series.title}” — no release was available.`);
       onClose();
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
       setBusy(false);
       setConfirmRemove(null);
     }
@@ -217,11 +219,11 @@ export default function AddDialog({ series, instances, fallbackChains, onClose, 
       const res = await api.add({ tvdbId: series.tvdbId, targets });
       const ok = res.results.filter((r) => r.ok).map((r) => r.instanceId);
       const bad = res.results.filter((r) => !r.ok);
-      if (bad.length) onToast(`Added to ${ok.join(", ") || "none"}; failed: ${bad.map((b) => b.instanceId).join(", ")}`, true);
-      else onToast(`Added “${series.title}” to ${ok.join(" + ")}`);
+      if (bad.length) toast(`Added to ${ok.join(", ") || "none"}; failed: ${bad.map((b) => b.instanceId).join(", ")}`, true);
+      else toast(`Added “${series.title}” to ${ok.join(" + ")}`);
       onClose();
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
     } finally {
       setBusy(false);
     }

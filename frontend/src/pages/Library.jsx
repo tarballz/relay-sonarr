@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, tierClass } from "../api.js";
 import { TierBadge, Spinner, Empty, ErrorState, bytes } from "../components/Shared.jsx";
+import { useToast } from "../components/ui/Toast.jsx";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
 import PolicyEditor from "../components/PolicyEditor.jsx";
@@ -42,24 +43,19 @@ export default function Library() {
   const [editing, setEditing] = useState(null); // series whose policy we're editing
   const [seasonsOf, setSeasonsOf] = useState(null); // series whose per-season status we're viewing
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState(null);
-  const showToast = (msg, err) => {
-    setToast({ msg, err });
-    setTimeout(() => setToast(null), 4000);
-  };
+  const toast = useToast();
 
   async function confirmRemove(deleteFiles) {
     setBusy(true);
     try {
       await api.removeSeries(removing.instanceId, removing.id, deleteFiles);
       await queryClient.invalidateQueries({ queryKey: ["series"] });
-      setToast({ msg: `Removed “${removing.title}” from ${removing.instanceName}` });
+      toast(`Removed “${removing.title}” from ${removing.instanceName}`);
       setRemoving(null);
     } catch (e) {
-      setToast({ msg: e.message, err: true });
+      toast(e.message, true);
     } finally {
       setBusy(false);
-      setTimeout(() => setToast(null), 4000);
     }
   }
 
@@ -301,7 +297,6 @@ export default function Library() {
           chainKey={resolving.instanceId}
           autoReattempt
           onClose={() => setResolving(null)}
-          onToast={showToast}
         />
       )}
 
@@ -310,7 +305,6 @@ export default function Library() {
           series={{ title: editing.title, tvdbId: editing.tvdbId }}
           instances={instances}
           onClose={() => setEditing(null)}
-          onToast={showToast}
         />
       )}
 
@@ -322,11 +316,8 @@ export default function Library() {
             instanceId: seasonsOf.instanceId,
           }}
           onClose={() => setSeasonsOf(null)}
-          onToast={showToast}
         />
       )}
-
-      {toast && <div className={`toast ${toast.err ? "err" : ""}`}>{toast.msg}</div>}
     </>
   );
 }

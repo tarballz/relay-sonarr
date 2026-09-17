@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import { Spinner, Empty, ErrorState } from "../components/Shared.jsx";
+import { useToast } from "../components/ui/Toast.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
 
 const PHASE_LABEL = {
@@ -90,11 +91,7 @@ export default function Operations() {
   const [open, setOpen] = useState({});
   const [resolving, setResolving] = useState(null);
   const [source, setSource] = useState("all"); // all | reconciler | user
-  const [toast, setToast] = useState(null);
-  const showToast = (msg, err) => {
-    setToast({ msg, err });
-    setTimeout(() => setToast(null), 4200);
-  };
+  const toast = useToast();
 
   const ops = (data || []).filter(
     (op) => source === "all" || (op.source || "user") === source
@@ -177,10 +174,8 @@ export default function Operations() {
           series={{ title: resolving.title, tvdbId: resolving.tvdbId }}
           initial={resolving.result}
           onClose={() => setResolving(null)}
-          onToast={showToast}
         />
       )}
-      {toast && <div className={`toast ${toast.err ? "err" : ""}`}>{toast.msg}</div>}
     </>
   );
 }

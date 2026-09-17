@@ -3,12 +3,14 @@ import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, tierClass } from "../api.js";
 import { Spinner } from "./Shared.jsx";
+import { useToast } from "./ui/Toast.jsx";
 import { useDialog } from "./useDialog.js";
 
 // Per-series policy editor: preferred tier, per-episode split toggle, ordered
 // fallback tiers (each optionally time-gated), pause/resume, and "reconcile now".
 // Reads the effective policy on open (stored or derived) and saves overrides.
-export default function PolicyEditor({ series, instances, onClose, onToast }) {
+export default function PolicyEditor({ series, instances, onClose }) {
+  const toast = useToast();
   const [policy, setPolicy] = useState(null);
   const [paused, setPaused] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -25,7 +27,7 @@ export default function PolicyEditor({ series, instances, onClose, onToast }) {
           setPaused(res.paused);
         }
       } catch (e) {
-        onToast?.(e.message, true);
+        toast(e.message, true);
         onClose();
       }
     })();
@@ -61,10 +63,10 @@ export default function PolicyEditor({ series, instances, onClose, onToast }) {
     try {
       await api.setPolicy(series.tvdbId, policy);
       invalidate();
-      onToast?.(`Saved policy for “${series.title}”.`);
+      toast(`Saved policy for “${series.title}”.`);
       onClose();
     } catch (e) {
-      onToast?.(e.message, true);
+      toast(e.message, true);
       setBusy(false);
     }
   }
@@ -77,7 +79,7 @@ export default function PolicyEditor({ series, instances, onClose, onToast }) {
       setPaused(!paused);
       invalidate();
     } catch (e) {
-      onToast?.(e.message, true);
+      toast(e.message, true);
     } finally {
       setBusy(false);
     }
@@ -88,12 +90,12 @@ export default function PolicyEditor({ series, instances, onClose, onToast }) {
     try {
       const r = await api.reconcileSeries(series.tvdbId);
       const acted = (r.searchedOnDesired || 0) + (r.filled || 0);
-      onToast?.(acted ? `Reconciling “${series.title}” — ${acted} episode(s) actioned.`
+      toast(acted ? `Reconciling “${series.title}” — ${acted} episode(s) actioned.`
                       : `“${series.title}” is up to date — nothing to do.`);
       invalidate();
       onClose();
     } catch (e) {
-      onToast?.(e.message, true);
+      toast(e.message, true);
       setBusy(false);
     }
   }

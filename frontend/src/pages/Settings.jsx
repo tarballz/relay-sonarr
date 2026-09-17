@@ -2,17 +2,13 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, tierClass } from "../api.js";
 import { TierBadge, Spinner, ErrorState } from "../components/Shared.jsx";
+import { useToast } from "../components/ui/Toast.jsx";
 
 export default function Settings() {
   const { data: instances, isLoading, isError, error, refetch } = useQuery({ queryKey: ["instances"], queryFn: api.instances });
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const qc = useQueryClient();
-
-  const [toast, setToast] = useState(null);
-  const showToast = (msg, err) => {
-    setToast({ msg, err });
-    setTimeout(() => setToast(null), 4000);
-  };
+  const toast = useToast();
 
   return (
     <>
@@ -44,19 +40,17 @@ export default function Settings() {
       </div>
 
       {instances && settings && (
-        <ChainEditor instances={instances} initial={settings.fallbackChains || {}} onToast={showToast} qc={qc} />
+        <ChainEditor instances={instances} initial={settings.fallbackChains || {}} toast={toast} qc={qc} />
       )}
 
-      <DefaultsEditor onToast={showToast} qc={qc} />
-
-      {toast && <div className={`toast ${toast.err ? "err" : ""}`}>{toast.msg}</div>}
+      <DefaultsEditor toast={toast} qc={qc} />
     </>
   );
 }
 
 // --- Fallback chain editor --------------------------------------------------
 // Edits the {startId: [{instanceId, profile}]} map and saves it as a DB override.
-function ChainEditor({ instances, initial, onToast, qc }) {
+function ChainEditor({ instances, initial, toast, qc }) {
   const [chains, setChains] = useState(() => clone(initial));
   const [busy, setBusy] = useState(false);
   // Re-seed if the server copy changes (e.g. another tab saved).
@@ -92,9 +86,9 @@ function ChainEditor({ instances, initial, onToast, qc }) {
       );
       await api.setFallbackChains(payload);
       qc.invalidateQueries({ queryKey: ["settings"] });
-      onToast("Fallback chains saved.");
+      toast("Fallback chains saved.");
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
     } finally {
       setBusy(false);
     }
@@ -156,7 +150,7 @@ function ChainEditor({ instances, initial, onToast, qc }) {
 }
 
 // --- Reconciler defaults editor ---------------------------------------------
-function DefaultsEditor({ onToast, qc }) {
+function DefaultsEditor({ toast, qc }) {
   const { data } = useQuery({ queryKey: ["defaults"], queryFn: api.defaults });
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -181,9 +175,9 @@ function DefaultsEditor({ onToast, qc }) {
     try {
       await api.setDefaults({ ...data, ...form });
       qc.invalidateQueries({ queryKey: ["defaults"] });
-      onToast("Defaults saved.");
+      toast("Defaults saved.");
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
     } finally {
       setBusy(false);
     }

@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, streamSpillSeason, tierClass } from "../api.js";
 import { Spinner } from "./Shared.jsx";
+import { useToast } from "./ui/Toast.jsx";
 import { useDialog } from "./useDialog.js";
 import ProgressStream from "./ProgressStream.jsx";
 
@@ -14,7 +15,8 @@ import ProgressStream from "./ProgressStream.jsx";
 // the lower tier (the rest of the show stays put), streaming progress live.
 //
 // `series` needs {title, tvdbId, instanceId?}.
-export default function SeasonDialog({ series, onClose, onToast }) {
+export default function SeasonDialog({ series, onClose }) {
+  const toast = useToast();
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -31,7 +33,7 @@ export default function SeasonDialog({ series, onClose, onToast }) {
         : await api.plan(series.tvdbId);
       setPlan(p);
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
     }
   }
 
@@ -79,7 +81,7 @@ export default function SeasonDialog({ series, onClose, onToast }) {
           setStreaming(false);
           setActiveSeason(null);
           if (res.status === "spilled") {
-            onToast(
+            toast(
               `Season ${res.season}: ${res.episodeCount} episode${res.episodeCount === 1 ? "" : "s"} ` +
                 `now downloading at lower resolution.`
             );
@@ -90,7 +92,7 @@ export default function SeasonDialog({ series, onClose, onToast }) {
         onError: (m) => {
           setStreaming(false);
           setActiveSeason(null);
-          onToast(m, true);
+          toast(m, true);
         },
       }
     );

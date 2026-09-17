@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, streamAdvance, streamReattempt, streamFillGaps } from "../api.js";
+import { useToast } from "./ui/Toast.jsx";
 import { useDialog } from "./useDialog.js";
 import ProgressStream from "./ProgressStream.jsx";
 import ResolutionOptions from "./ResolutionOptions.jsx";
@@ -21,8 +22,8 @@ export default function ResolveDialog({
   initial = null,
   autoReattempt = false,
   onClose,
-  onToast,
 }) {
+  const toast = useToast();
   const [roadblock, setRoadblock] = useState(initial);
   const [steps, setSteps] = useState([]);
   const [streaming, setStreaming] = useState(false);
@@ -33,7 +34,7 @@ export default function ResolveDialog({
   const dialogRef = useDialog(onClose);
 
   function done(msg) {
-    if (msg) onToast(msg);
+    if (msg) toast(msg);
     qc.invalidateQueries({ queryKey: ["operations"] });
     qc.invalidateQueries({ queryKey: ["series"] });
     onClose();
@@ -70,7 +71,7 @@ export default function ResolveDialog({
         onResult: handleTerminal,
         onError: (m) => {
           setStreaming(false);
-          onToast(m, true);
+          toast(m, true);
         },
       }
     );
@@ -119,7 +120,7 @@ export default function ResolveDialog({
       await api.removeSeries(confirmRemove.instanceId, confirmRemove.seriesId);
       done(`Removed “${series.title}”.`);
     } catch (e) {
-      onToast(e.message, true);
+      toast(e.message, true);
       setBusy(false);
       setConfirmRemove(null);
     }

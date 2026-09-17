@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import { TierBadge, Spinner, Empty, ErrorState } from "../components/Shared.jsx";
+import { useToast } from "../components/ui/Toast.jsx";
 import AddDialog from "../components/AddDialog.jsx";
 
 function HealthPills() {
@@ -24,7 +25,7 @@ export default function SearchAdd() {
   const [term, setTerm] = useState("");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(null);
-  const [toast, setToast] = useState(null);
+  const toast = useToast();
 
   const { data: instances } = useQuery({ queryKey: ["instances"], queryFn: api.instances });
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -33,11 +34,6 @@ export default function SearchAdd() {
     queryFn: () => api.search(query),
     enabled: query.length > 1,
   });
-
-  const showToast = (msg, err) => {
-    setToast({ msg, err });
-    setTimeout(() => setToast(null), 4200);
-  };
 
   return (
     <>
@@ -114,11 +110,8 @@ export default function SearchAdd() {
           instances={instances}
           fallbackChains={settings?.fallbackChains || {}}
           onClose={() => setAdding(null)}
-          onToast={showToast}
         />
       )}
-
-      {toast && <div className={`toast ${toast.err ? "err" : ""}`}>{toast.msg}</div>}
     </>
   );
 }

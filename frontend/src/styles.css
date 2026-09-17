@@ -688,11 +688,19 @@ label.field {
   }
 }
 
-.toast {
+.toast-host {
   position: fixed;
   right: 22px;
   bottom: 22px;
+  /* TODO(Task 9): tokenize as var(--z-toast) once the token lands. */
   z-index: 80;
+  display: flex;
+  flex-direction: column;
+  /* TODO(Task 9): tokenize as var(--s-2) once the token lands. */
+  gap: 10px;
+}
+.toast {
+  position: static;
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-left: 3px solid var(--ok);
@@ -1755,10 +1763,12 @@ label.field {
   }
 
   /* ---- Toast spans the bottom ----------------------------------------- */
-  .toast {
+  .toast-host {
     left: 12px;
     right: 12px;
     bottom: calc(env(safe-area-inset-bottom) + 12px);
+  }
+  .toast {
     max-width: none;
   }
 }

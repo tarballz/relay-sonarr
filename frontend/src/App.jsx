@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api.js";
+import { ToastProvider } from "./components/ui/Toast.jsx";
 import SearchAdd from "./pages/SearchAdd.jsx";
 import Activity from "./pages/Activity.jsx";
 import Library from "./pages/Library.jsx";
@@ -82,43 +83,45 @@ export default function App() {
   }, [drawerOpen]);
 
   return (
-    <div className="shell">
-      {/* Mobile-only top bar (hidden ≥861px via CSS) */}
-      <header className="topbar">
-        <button
-          className="topbar-burger"
-          aria-label={drawerOpen ? "Close menu" : "Open menu"}
-          aria-expanded={drawerOpen}
-          onClick={() => setDrawerOpen((v) => !v)}
-        >
-          {drawerOpen ? "✕" : "☰"}
-        </button>
-        <div className="topbar-brand">
-          relay<span className="dot">.</span>
-        </div>
-        <NavLink to="/settings" className="topbar-gear" aria-label="Settings" onClick={closeDrawer}>
-          ⚙
-        </NavLink>
-      </header>
+    <ToastProvider>
+      <div className="shell">
+        {/* Mobile-only top bar (hidden ≥861px via CSS) */}
+        <header className="topbar">
+          <button
+            className="topbar-burger"
+            aria-label={drawerOpen ? "Close menu" : "Open menu"}
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((v) => !v)}
+          >
+            {drawerOpen ? "✕" : "☰"}
+          </button>
+          <div className="topbar-brand">
+            relay<span className="dot">.</span>
+          </div>
+          <NavLink to="/settings" className="topbar-gear" aria-label="Settings" onClick={closeDrawer}>
+            ⚙
+          </NavLink>
+        </header>
 
-      {/* Dimmer behind the off-canvas drawer */}
-      <div
-        className={`drawer-scrim${drawerOpen ? " open" : ""}`}
-        onClick={closeDrawer}
-        aria-hidden="true"
-      />
+        {/* Dimmer behind the off-canvas drawer */}
+        <div
+          className={`drawer-scrim${drawerOpen ? " open" : ""}`}
+          onClick={closeDrawer}
+          aria-hidden="true"
+        />
 
-      <Sidebar open={drawerOpen} onClose={closeDrawer} />
+        <Sidebar open={drawerOpen} onClose={closeDrawer} />
 
-      <main className="main">
-        <Routes>
-          <Route path="/" element={<SearchAdd />} />
-          <Route path="/activity" element={<Activity />} />
-          <Route path="/library" element={<Library />} />
-          <Route path="/operations" element={<Operations />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </main>
-    </div>
+        <main className="main">
+          <Routes>
+            <Route path="/" element={<SearchAdd />} />
+            <Route path="/activity" element={<Activity />} />
+            <Route path="/library" element={<Library />} />
+            <Route path="/operations" element={<Operations />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </main>
+      </div>
+    </ToastProvider>
   );
 }
