@@ -1,10 +1,10 @@
-import { tierClass } from "../api.js";
-
-const LABELS = { t1080p: "1080P", t4k: "4K", tdefault: "" };
+import { useTiers } from "./ui/TierProvider.jsx";
 
 export function TierBadge({ instanceId, name }) {
-  const cls = tierClass(instanceId);
-  return <span className={`tier ${cls}`}>{name || LABELS[cls] || instanceId}</span>;
+  const { cls, label } = useTiers();
+  const tierCls = cls(instanceId);
+  const tierLbl = label(instanceId);
+  return <span className={`tier ${tierCls}`}>{name || tierLbl || instanceId}</span>;
 }
 
 export function Spinner() {

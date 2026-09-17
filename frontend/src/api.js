@@ -1,5 +1,6 @@
 import { request } from "./lib/http.js";
 import { openStream } from "./lib/stream.js";
+import { tierClass } from "./lib/tiers.js";
 
 // Thin adapter so the method bodies below stay one-liners.
 const get = (path, opts) => request(path, opts);
@@ -61,10 +62,5 @@ export function streamSpillSeason(params, handlers) {
   return openStream("/spill-season/stream", params, handlers);
 }
 
-// Map an instance id to its tier CSS class. 1080p -> teal, 4k -> amber.
-export function tierClass(instanceId) {
-  const id = (instanceId || "").toLowerCase();
-  if (id.includes("4k")) return "t4k";
-  if (id.includes("1080")) return "t1080p";
-  return "tdefault";
-}
+// Re-export tierClass so existing call sites don't change.
+export { tierClass };

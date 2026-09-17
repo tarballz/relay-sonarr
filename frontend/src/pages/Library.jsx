@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, tierClass } from "../api.js";
 import { TierBadge, Spinner, Empty, ErrorState, bytes } from "../components/Shared.jsx";
 import { useToast } from "../components/ui/Toast.jsx";
+import { useTiers } from "../components/ui/TierProvider.jsx";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
 import PolicyEditor from "../components/PolicyEditor.jsx";
@@ -44,6 +45,7 @@ export default function Library() {
   const [seasonsOf, setSeasonsOf] = useState(null); // series whose per-season status we're viewing
   const [busy, setBusy] = useState(false);
   const toast = useToast();
+  const { label } = useTiers();
 
   async function confirmRemove(deleteFiles) {
     setBusy(true);
@@ -134,7 +136,7 @@ export default function Library() {
             const missing = total - have;
             const url = posterUrl(s);
             const tcls = tierClass(s.instanceId);
-            const shortTier = tcls === "t4k" ? "4K" : tcls === "t1080p" ? "1080P" : s.instanceName;
+            const shortTier = label(s.instanceId);
             return (
               <motion.div
                 key={`${s.instanceId}-${s.id}`}

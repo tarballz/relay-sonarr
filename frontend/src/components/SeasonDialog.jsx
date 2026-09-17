@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api, streamSpillSeason, tierClass } from "../api.js";
 import { Spinner } from "./Shared.jsx";
 import { useToast } from "./ui/Toast.jsx";
+import { useTiers } from "./ui/TierProvider.jsx";
 import Dialog from "./ui/Dialog.jsx";
 import { useStreamFlow } from "./ui/useStreamFlow.js";
 import ProgressStream from "./ProgressStream.jsx";
@@ -23,6 +24,7 @@ export default function SeasonDialog({ series, onClose }) {
   const [activeSeason, setActiveSeason] = useState(null);
   const qc = useQueryClient();
   const { flow, run, busy, canShowFooter } = useStreamFlow();
+  const { label } = useTiers();
 
   async function load(refresh) {
     try {
@@ -152,7 +154,7 @@ export default function SeasonDialog({ series, onClose }) {
                     </span>
                     {(s.obtainedTiers || []).map((t) => (
                       <span key={t} className={`tier ${tierClass(t)}`}>
-                        {tierClass(t) === "t4k" ? "4K" : tierClass(t) === "t1080p" ? "1080P" : t}
+                        {label(t)}
                       </span>
                     ))}
                   </div>
@@ -173,7 +175,7 @@ export default function SeasonDialog({ series, onClose }) {
                       {activeSeason === s.season ? (
                         <Spinner />
                       ) : (
-                        `Get at lower res (${tierClass(target) === "t1080p" ? "1080p" : tierClass(target) === "t4k" ? "4K" : target})`
+                        `Get at lower res (${label(target)})`
                       )}
                     </button>
                   )}
