@@ -16,6 +16,12 @@ import ProgressStream from "./ProgressStream.jsx";
 import ResolutionOptions from "./ResolutionOptions.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 
+// Pull a show's fanart (backdrop) URL from its images, if present.
+function fanartUrl(series) {
+  const img = (series.images || []).find((i) => i.coverType === "fanart");
+  return img?.remoteUrl || img?.url || null;
+}
+
 // Per-instance add dialog. One toggle per configured tier; each carries its own
 // quality-profile + root-folder pickers. Adding a single tier that has a
 // configured fallback routes through /smart-add so we can surface the roadblock
@@ -212,6 +218,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
   // than reverting to the tier picker — mirrors the old steps-never-clear
   // behaviour without keying off steps.length.
   const inFlight = flow.phase !== "idle";
+  const backdrop = fanartUrl(series);
 
   return (
     <>
@@ -220,6 +227,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
         label={`Add ${series.title}`}
         onClose={onClose}
         busy={streaming}
+        backdrop={backdrop}
         subtitle={
           <>
             {series.year ? <span>{series.year}</span> : null}

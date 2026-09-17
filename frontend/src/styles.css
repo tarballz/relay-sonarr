@@ -460,8 +460,10 @@ body:has(.scrim) {
   border-bottom: 1px solid var(--line);
 }
 /* Task 6: the shared Dialog skeleton adds a header close button next to the
-   title/subtitle, so .dialog-head is now a row. Fold this into the single
-   .dialog-head rule above once Task 9's token pass touches this file. */
+   title/subtitle, so .dialog-head is now a row. There are three .dialog-head
+   rule blocks in this file (this one, the one above, and the fanart-backdrop
+   one further down at ~line 915) — fold all three into one once Task 9's
+   token pass touches this file. */
 .dialog-head {
   display: flex;
   align-items: flex-start;
