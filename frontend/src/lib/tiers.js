@@ -26,8 +26,8 @@ export function tierClass(instanceId, registry) {
   return registry?.[instanceId]?.cls || sniff(instanceId).cls;
 }
 
-export function tierLabel(instanceId, registry) {
+export function tierLabel(instanceId, registry, fallbackName) {
   const known = registry?.[instanceId];
   if (known) return known.label;
-  return sniff(instanceId).label || instanceId || "";
+  return sniff(instanceId).label || fallbackName || instanceId || "";
 }

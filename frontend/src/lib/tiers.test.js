@@ -53,4 +53,25 @@ describe("tierLabel", () => {
     expect(tierLabel("anime", registry)).toBe("Anime");
     expect(tierLabel("mystery")).toBe("mystery");
   });
+
+  it("uses a caller-supplied fallback name for an unknown id without a registry entry", () => {
+    // When the registry hasn't loaded yet, Library can pass the instance's friendly name
+    expect(tierLabel("anime", undefined, "Anime Series")).toBe("Anime Series");
+    expect(tierLabel("mystery", undefined, "Mystery Instance")).toBe("Mystery Instance");
+  });
+
+  it("prefers registry and sniff over the supplied name", () => {
+    const registry = buildTiers(INSTANCES);
+    // Known tier in registry: ignores the supplied name
+    expect(tierLabel("1080p", registry, "ignored")).toBe("1080P");
+    // Unknown tier in registry: still uses registry name over supplied name
+    expect(tierLabel("anime", registry, "ignored")).toBe("Anime");
+    // Sniffable tier without registry: sniff wins over supplied name
+    expect(tierLabel("4k", undefined, "ignored")).toBe("4K");
+  });
+
+  it("falls back to id when no fallback name is provided", () => {
+    expect(tierLabel("mystery")).toBe("mystery");
+    expect(tierLabel("unknown", undefined, undefined)).toBe("unknown");
+  });
 });

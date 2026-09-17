@@ -136,7 +136,7 @@ export default function Library() {
             const missing = total - have;
             const url = posterUrl(s);
             const tcls = tierClass(s.instanceId);
-            const shortTier = label(s.instanceId);
+            const shortTier = label(s.instanceId, s.instanceName);
             return (
               <motion.div
                 key={`${s.instanceId}-${s.id}`}

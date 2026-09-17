@@ -11,14 +11,14 @@ export function useTiers() {
     () => ({
       registry,
       cls: (id) => tierClass(id, registry),
-      label: (id) => tierLabel(id, registry),
+      label: (id, fallbackName) => tierLabel(id, registry, fallbackName),
     }),
     [registry],
   );
 }
 
 export function TierProvider({ children }) {
-  // Reuses the settings query the Settings page and AddDialog already run.
+  // Reuses the settings query the Settings page and SearchAdd already run.
   const { data } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const registry = useMemo(() => buildTiers(data?.instances), [data]);
   return <TierContext.Provider value={registry}>{children}</TierContext.Provider>;
