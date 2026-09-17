@@ -150,7 +150,7 @@ Expected: FAIL — no `test` script yet (`npm error Missing script: "test"`). Af
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.3.0",
-    "vitest": "^2.1.0"
+    "vitest": "^5.0.0"
   }
 ```
 
@@ -1205,47 +1205,56 @@ Same mechanical change: `Dialog` with `title`/`subtitle` from its current `.dial
 
 For `AddDialog.jsx`, `ResolveDialog.jsx` and `SeasonDialog.jsx`, in each file:
 
-1. Delete the local `streaming`/`steps` state and the `const inFlight = streaming || steps.length > 0` line (`AddDialog.jsx:231`, `ResolveDialog.jsx:128`, `SeasonDialog.jsx:100`) and use the reducer plus one cancel ref:
+1. First create the shared hook `frontend/src/components/ui/useStreamFlow.js`, so the run/cancel logic exists once rather than being pasted into three dialogs:
 
 ```jsx
-import { useEffect, useReducer, useRef } from "react";
-import { flowReducer, initialFlow, isBusy, showFooter } from "../lib/flow.js";
-import { useToast } from "./ui/Toast.jsx";
+import { useCallback, useEffect, useReducer, useRef } from "react";
+import { flowReducer, initialFlow, isBusy, showFooter } from "../../lib/flow.js";
+import { useToast } from "./Toast.jsx";
 
+// One streaming operation for a dialog: reducer state plus the live EventSource's
+// cancel handle. Unmounting cancels the stream, so its handlers can never fire
+// into a tree that is gone, and starting a run cancels any previous one.
+export function useStreamFlow() {
   const [flow, dispatch] = useReducer(flowReducer, initialFlow);
   const cancelRef = useRef(null);
   const toast = useToast();
 
-  const cancelStream = () => {
+  const cancel = useCallback(() => {
     cancelRef.current?.();
     cancelRef.current = null;
-  };
+  }, []);
 
-  // Closing the dialog mid-stream must close the EventSource too — otherwise its
-  // handlers keep firing into an unmounted tree.
-  useEffect(() => cancelStream, []);
+  useEffect(() => cancel, [cancel]);
 
-  const runStream = (streamFn, params, onDone) => {
-    cancelStream();
-    dispatch({ type: "start" });
-    cancelRef.current = streamFn(params, {
-      onStep: (step) => dispatch({ type: "step", step }),
-      onResult: (result) => {
-        cancelRef.current = null;
-        dispatch({ type: "result", result });
-        onDone?.(result);
-      },
-      onError: (error) => {
-        cancelRef.current = null;
-        dispatch({ type: "error", error });
-        toast(error, true);
-      },
-    });
-  };
+  const run = useCallback(
+    (streamFn, params, { onResult, onError } = {}) => {
+      cancel();
+      dispatch({ type: "start" });
+      cancelRef.current = streamFn(params, {
+        onStep: (step) => dispatch({ type: "step", step }),
+        onResult: (result) => {
+          cancelRef.current = null;
+          dispatch({ type: "result", result });
+          onResult?.(result);
+        },
+        onError: (error) => {
+          cancelRef.current = null;
+          dispatch({ type: "error", error });
+          if (onError) onError(error);
+          else toast(error, true);
+        },
+      });
+    },
+    [cancel, toast],
+  );
+
+  return { flow, run, cancel, busy: isBusy(flow), canShowFooter: showFooter(flow) };
+}
 ```
 
-2. Replace every read of the old state: `steps` → `flow.steps`, `streaming` → `isBusy(flow)`, `!inFlight && !loading` → `showFooter(flow) && !loading`, and pass `busy={isBusy(flow)}` to `Dialog`.
-3. Route every existing stream call through `runStream` (`AddDialog`'s smart-add at `:194` and its `runStream` at `:142-147`; `ResolveDialog`'s auto-reattempt effect at `:80-92` and `dispatchOption`; `SeasonDialog`'s spill at `:68`), keeping each one's terminal handling (`handleTerminal`, `onDone` invalidations, toasts) exactly as it is today.
+2. In each dialog, delete the local `streaming`/`steps` state and the `const inFlight = streaming || steps.length > 0` line (`AddDialog.jsx:231`, `ResolveDialog.jsx:128`, `SeasonDialog.jsx:100`), take `const { flow, run, busy, canShowFooter } = useStreamFlow();`, and replace every read: `steps` → `flow.steps`, `streaming` → `busy`, `!inFlight && !loading` → `canShowFooter && !loading`. Pass `busy={busy}` to `Dialog`.
+3. Route every existing stream call through `run(streamFn, params, { onResult: … })` (`AddDialog`'s smart-add at `:194` and its `runStream` at `:142-147`; `ResolveDialog`'s auto-reattempt effect at `:80-92` and `dispatchOption`; `SeasonDialog`'s spill at `:68`), keeping each one's terminal handling (`handleTerminal`, query invalidations, toasts) exactly as it is today. Where a dialog wants its own error handling instead of the default toast, pass `onError`.
 4. `ResolveDialog` gains a footer: a single `Close` button when `showFooter(flow)`.
 5. Keep the existing `useRef` latch that guards `ResolveDialog`'s auto-reattempt against StrictMode double-effects, and keep each file's `eslint-disable-next-line react-hooks/exhaustive-deps` comments where the deps are deliberately narrow.
 
