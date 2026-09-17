@@ -29,16 +29,21 @@ async def get_for_series(db: Database, tvdb_id: int) -> list:
 async def put(db: Database, *, instance_id: str, tvdb_id: int, season: int,
               episode: int, qualifies: bool, total_releases: int,
               qualifying_count: int, rejection_json: str, checked_at: str,
-              min_seeders: int = 0, best_release_json: str | None = None) -> None:
+              min_seeders: int = 0, best_release_json: str | None = None,
+              degraded: bool = False) -> None:
+    """``degraded`` marks a verdict reached while the instance had no working
+    indexers. The row is still written -- discarding it also discards the only
+    thing that ever repairs a stale row -- but the reader gives it a much
+    shorter TTL, so the wrongness is bounded without re-searching every tick."""
     await db.execute(
         "INSERT OR REPLACE INTO availability_cache"
         "(instance_id, tvdb_id, season, episode, qualifies, total_releases,"
         " qualifying_count, rejection_json, checked_at, min_seeders,"
-        " best_release_json) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " best_release_json, degraded) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (instance_id, tvdb_id, season, episode, 1 if qualifies else 0,
          total_releases, qualifying_count, rejection_json, checked_at, min_seeders,
-         best_release_json),
+         best_release_json, 1 if degraded else 0),
     )
 
 

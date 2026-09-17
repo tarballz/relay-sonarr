@@ -276,3 +276,12 @@ async def test_delete_queue_item_defaults_to_sonarr_redownloading(client):
     route = respx.delete(f"{BASE}/api/v3/queue/7").mock(return_value=httpx.Response(200))
     await client.delete_queue_item(7)
     assert route.calls.last.request.url.params["skipRedownload"] == "false"
+
+
+@respx.mock
+async def test_indexers_lists_configured_indexers(client):
+    respx.get(f"{BASE}/api/v3/indexer").mock(return_value=httpx.Response(200, json=[
+        {"id": 1, "name": "TPB", "enableInteractiveSearch": True},
+        {"id": 2, "name": "Uindex", "enableInteractiveSearch": False},
+    ]))
+    assert [i["id"] for i in await client.indexers()] == [1, 2]

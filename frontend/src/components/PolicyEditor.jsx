@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, tierClass } from "../api.js";
 import { Spinner } from "./Shared.jsx";
 import { useToast } from "./ui/Toast.jsx";
-import { useDialog } from "./useDialog.js";
+import Dialog from "./ui/Dialog.jsx";
 
 // Per-series policy editor: preferred tier, per-episode split toggle, ordered
 // fallback tiers (each optionally time-gated), pause/resume, and "reconcile now".
@@ -15,7 +14,6 @@ export default function PolicyEditor({ series, instances, onClose }) {
   const [paused, setPaused] = useState(false);
   const [busy, setBusy] = useState(false);
   const qc = useQueryClient();
-  const dialogRef = useDialog(onClose);
 
   useEffect(() => {
     let alive = true;

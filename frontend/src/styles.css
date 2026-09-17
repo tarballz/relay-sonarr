@@ -459,6 +459,35 @@ body:has(.scrim) {
   padding: 22px 24px 16px;
   border-bottom: 1px solid var(--line);
 }
+/* Task 6: the shared Dialog skeleton adds a header close button next to the
+   title/subtitle, so .dialog-head is now a row. Fold this into the single
+   .dialog-head rule above once Task 9's token pass touches this file. */
+.dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.dialog-head-text {
+  flex: 1;
+  min-width: 0;
+}
+.dialog-sub {
+  margin-top: 6px;
+}
+.dialog-close {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  border-radius: var(--radius-sm);
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  flex: none;
+}
+.dialog-close:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
 .dialog-head h2 {
   margin: 0;
   font-family: var(--font-display);

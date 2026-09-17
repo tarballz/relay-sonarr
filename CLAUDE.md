@@ -115,10 +115,14 @@ default 30 min).
   seeder floor can only turn a "yes" into a "no" and a looser one only a "no" into a "yes", so
   most threshold changes reuse the cached verdict. Invalidating on any change turned the
   default moving 3→5 into 1540 re-searches (~7.5h of indexer traffic in one tick).
-  **(2) an empty result is only trusted when the indexers were up** — `health.indexers_degraded`
-  gates it; while indexers are failing, nothing is cached and the episode stays `wanted`, so an
-  outage is never recorded as "unavailable". Public-tracker indexers cycle in and out of failure
-  constantly, so this is the normal case, not an incident.
+  **(2) an empty result is only trusted when there was something to ask** —
+  `health.indexers_degraded` compares the indexers Sonarr reports as failing against the
+  interactive-search-enabled count, and only gates when *all* of them are down. It must stay
+  that strict: an earlier version gated on *any* failure, which — since public-tracker indexers
+  cycle in and out of failure constantly — fired on every tick, threw away ~9k searches a day
+  and froze the cache for 36h. A gated verdict is still **cached**, flagged `degraded` with a
+  short `degradedTtlMinutes`; discarding it instead removes the only thing that ever repairs a
+  stale row, so the episode is re-searched forever and never learns.
   `compute_plan` then joins episodes across instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
   failed/imported/unmonitored`).
 - **Identity** — cross-instance episode identity is always `(tvdb_id, season, episode)`; Sonarr
@@ -126,7 +130,7 @@ default 30 min).
 - **Policy & settings** — `policy.py` (per-series `SeriesPolicy`), runtime defaults in
   `meta.default_policy` via `store/settings.py` — `minSeeders` (5), `stalledDays` (1),
   `deadHours` (6), `regrabCap` (5), `nearCompletePct` (95), `seederRelaxAfterDays` (3),
-  `emptyReleaseTtlMinutes`. The seeder floor is **per-episode and expires**
+  `emptyReleaseTtlMinutes`, `degradedTtlMinutes` (60). The seeder floor is **per-episode and expires**
   (`availability.effective_min_seeders`): thin-swarm back-catalogue would otherwise be stranded
   forever by a hard floor. Defaults live as module constants next to the code that reads them;
   **`Settings.jsx` sends `{...data, ...form}` with its own `??` fallbacks, so any default change

@@ -52,3 +52,27 @@ async def test_error_is_recorded(tmp_path):
     latest = (await store.recent())[0]
     assert latest["error"] == "boom"
     assert latest["result"] is None
+
+
+async def test_availability_put_records_the_degraded_flag(db):
+    """A verdict reached while the indexers were down is still cached -- not
+    caching it at all removed the only mechanism that ever repairs a stale row --
+    but it is marked so the reader can give it a much shorter TTL."""
+    from app.store import availability as avail_cache
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=1, season=1, episode=1, qualifies=False,
+        total_releases=0, qualifying_count=0, rejection_json="[]",
+        checked_at="2026-09-17T12:00:00+00:00", min_seeders=5, degraded=True,
+    )
+    row = await avail_cache.get_cached(db, "4k", 1, 1, 1)
+    assert row["degraded"] == 1
+
+
+async def test_availability_put_defaults_to_not_degraded(db):
+    from app.store import availability as avail_cache
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=1, season=1, episode=2, qualifies=True,
+        total_releases=3, qualifying_count=1, rejection_json="[]",
+        checked_at="2026-09-17T12:00:00+00:00",
+    )
+    assert (await avail_cache.get_cached(db, "4k", 1, 1, 2))["degraded"] in (0, None)

@@ -79,6 +79,13 @@ Tuning lives in **Settings → Reconciler defaults**, not here. `regrabCap` (5/t
 is deliberately small: each replacement costs a real interactive search, and bursts
 earn a Prowlarr 429.
 
+Relay also distrusts an empty search result when Sonarr reports *every*
+interactive-search indexer as failing — that verdict is cached but expires on
+`degradedTtlMinutes` (60) instead of `emptyReleaseTtlMinutes` (240), so an outage
+self-corrects within the hour instead of marking episodes unavailable for four.
+The all-indexers threshold is deliberate: on public trackers at least one indexer
+is essentially always failing, so a looser test fires permanently.
+
 ### Reconciler interval
 
 `RECONCILER_INTERVAL_S` in `.env` (default 1800). Ticks are lock-serialized, so if a

@@ -47,6 +47,9 @@ DEFAULT_TTL = 6 * 3600  # seconds
 # release just hasn't shown up yet) — recheck it much sooner than a stable
 # "releases exist but none qualify" verdict, as long as the episode has aired.
 EMPTY_RELEASE_TTL = 45 * 60  # seconds
+# A verdict reached with no working indexers: short enough to self-correct soon,
+# long enough not to re-search the same episode on every single tick.
+DEFAULT_DEGRADED_TTL_MINUTES = 60
 
 # Episode states owned by the download lifecycle (poller/reconciler), which
 # compute_plan must preserve rather than recompute from file/availability.
@@ -183,6 +186,7 @@ async def refresh_availability(
     defaults = await settings_store.get_defaults(db)
     min_seeders = int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS))
     relax_days = float(defaults.get("seederRelaxAfterDays", DEFAULT_RELAX_AFTER_DAYS))
+    degraded_ttl = float(defaults.get("degradedTtlMinutes", DEFAULT_DEGRADED_TTL_MINUTES)) * 60
     # The floor is per-episode, not per-series: an episode that has been wanted
     # for weeks has already proved nothing healthier is coming.
     wanted_since = {(r["season"], r["episode"]): r["wanted_since"]
@@ -209,17 +213,20 @@ async def refresh_availability(
         async with _down_lock:
             if "value" not in _down:
                 try:
-                    down = indexers_degraded(await client.health())
+                    health = await client.health()
+                    capacity = sum(1 for i in await client.indexers()
+                                   if i.get("enableInteractiveSearch"))
+                    down = indexers_degraded(health, interactive_count=capacity)
                 except Exception as exc:  # noqa: BLE001
-                    # Can't tell -> don't invent an outage; behave as before.
-                    logger.warning("health check failed for %s: %s", instance_id, exc)
+                    # Can't establish capacity -> don't invent an outage.
+                    logger.warning("capacity probe failed for %s: %s", instance_id, exc)
                     down = False
                 _down["value"] = down
                 if down:
                     get_journal().emit(
                         kinds.AVAILABILITY_INDEXERS_DEGRADED,
-                        f"{instance_id} reports failing indexers — empty search results "
-                        f"will be discarded rather than cached as unavailable",
+                        f"{instance_id} has no working indexers — empty search results "
+                        f"will be cached with a short TTL, not trusted as unavailable",
                         level="warn", source="placement", instance_id=instance_id,
                         tvdb_id=tvdb_id,
                     )
@@ -236,7 +243,9 @@ async def refresh_availability(
         # (outage, or the release just landed) — trust it for a much shorter
         # window than a stable "releases exist but none qualify" verdict.
         effective_ttl = (
-            empty_ttl
+            degraded_ttl
+            if cached is not None and cached["degraded"]
+            else empty_ttl
             if cached is not None and cached["total_releases"] == 0 and _has_aired(ep, now)
             else ttl
         )
@@ -260,16 +269,11 @@ async def refresh_availability(
             return
         async with sem:
             releases = await client.releases(ep["id"])
-        if not releases and await indexers_are_down():
-            # Record nothing: with no cached row, compute_plan treats the episode
-            # as never checked and leaves it wanted, so the next tick retries.
-            _count_check(instance_id, "degraded")
-            results.append({
-                "season": season, "episode": epnum, "qualifies": False,
-                "qualifyingCount": 0, "totalReleases": 0,
-                "rejectionSummary": [], "cached": False, "unknown": True,
-            })
-            return
+        # An empty result with no working indexers means "we couldn't ask", not
+        # "nothing exists". Cache it anyway -- writing nothing also removes the
+        # only thing that repairs a stale row, and re-searches every tick forever
+        # -- but flag it so it expires in minutes instead of hours.
+        degraded = not releases and await indexers_are_down()
         qc = count_qualifying(releases, floor)
         rej = summarize_rejections(releases)
         filtered = seeder_filtered_count(releases, floor)
@@ -280,7 +284,9 @@ async def refresh_availability(
         best = pick_best_torrent(releases, floor)
         if best is not None:
             best = {k: best.get(k) for k in ("guid", "indexerId", "seeders", "title")}
-        _count_check(instance_id, "qualifies" if qc > 0 else ("zero" if not releases else "rejected"))
+        _count_check(instance_id, "degraded" if degraded
+                     else "qualifies" if qc > 0
+                     else "zero" if not releases else "rejected")
         if cached is not None:
             _journal_verdict_change(
                 tvdb_id=tvdb_id, season=season, episode=epnum, instance_id=instance_id,
@@ -292,11 +298,12 @@ async def refresh_availability(
             rejection_json=json.dumps(rej), checked_at=now.isoformat(),
             min_seeders=floor,
             best_release_json=json.dumps(best) if best else None,
+            degraded=degraded,
         )
         results.append({
             "season": season, "episode": epnum, "qualifies": qc > 0,
             "qualifyingCount": qc, "totalReleases": len(releases),
-            "rejectionSummary": rej, "cached": False,
+            "rejectionSummary": rej, "cached": False, "degraded": degraded,
         })
 
     await asyncio.gather(*(check(e) for e in gaps))

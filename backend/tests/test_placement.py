@@ -637,78 +637,126 @@ def _mock_health(base, entries):
     respx.get(f"{base}/api/v3/health").mock(return_value=httpx.Response(200, json=entries))
 
 
-INDEXERS_DOWN = [{"source": "IndexerStatusCheck", "type": "warning",
-                  "message": "Indexers unavailable due to failures: Uindex"}]
+def _mock_indexers(base, names):
+    respx.get(f"{base}/api/v3/indexer").mock(return_value=httpx.Response(200, json=[
+        {"id": n, "name": name, "enableInteractiveSearch": True}
+        for n, name in enumerate(names, 1)
+    ]))
+
+
+def _failing(*names):
+    return [{"source": "IndexerStatusCheck", "type": "warning",
+             "message": "Indexers unavailable due to failures: " + ", ".join(names)}]
 
 
 @respx.mock
-async def test_empty_search_during_an_indexer_outage_is_not_recorded(tmp_path):
-    """Zero releases while indexers are down means "we couldn't ask", not
-    "nothing exists" — caching it marks the episode unavailable for hours."""
+async def test_empty_search_during_a_total_outage_is_marked_degraded(tmp_path):
+    """Still cached -- discarding it also discards the only thing that ever
+    repairs a stale row -- but flagged so it gets a much shorter TTL."""
     reg = make_registry()
     _mock_library()
     respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
-    _mock_health(B, INDEXERS_DOWN)
+    _mock_indexers(B, ["TPB"])
+    _mock_health(B, _failing("TPB"))
     db = _db(tmp_path)
 
     rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
 
-    assert rows[0]["unknown"] is True
-    assert rows[0]["qualifies"] is False
-    # Nothing cached, so the next tick asks again instead of waiting out a TTL.
-    assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is None
-
-
-@respx.mock
-async def test_empty_search_with_healthy_indexers_is_still_recorded(tmp_path):
-    """The regression fence: a genuine "nothing exists" must still be cached."""
-    reg = make_registry()
-    _mock_library()
-    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
-    _mock_health(B, [{"source": "RootFolderCheck", "type": "warning", "message": "x"}])
-    db = _db(tmp_path)
-
-    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
-
-    assert rows[0].get("unknown") is not True
+    assert rows[0]["degraded"] is True
     cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
-    assert cached is not None and cached["total_releases"] == 0
+    assert cached is not None and cached["degraded"] == 1
 
 
 @respx.mock
-async def test_a_non_empty_result_is_trusted_even_while_degraded(tmp_path):
-    """Releases came back, so the indexers that matter clearly answered."""
+async def test_a_minority_outage_caches_the_empty_result_normally(tmp_path):
+    """The regression fence. Any-indexer-failing describes the normal state of
+    public trackers; gating on it fired every tick and froze the cache."""
+    reg = make_registry()
+    _mock_library()
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_indexers(B, ["TPB", "Uindex", "1337x", "LimeTorrents"])
+    _mock_health(B, _failing("TPB"))
+    db = _db(tmp_path)
+
+    rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert rows[0].get("degraded") is not True
+    cached = await avail_cache.get_cached(db, "4k", TVDB, 1, 2)
+    assert cached is not None and cached["degraded"] in (0, None)
+
+
+@respx.mock
+async def test_a_degraded_verdict_is_not_re_searched_within_its_short_ttl(tmp_path):
+    """Bounds the search load: the old gate re-searched every episode every tick."""
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_indexers(B, ["TPB"])
+    _mock_health(B, _failing("TPB"))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"degradedTtlMinutes": 60})
+
+    await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+    r2 = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
+
+    assert route.call_count == 1
+    assert r2[0]["cached"] is True
+
+
+@respx.mock
+async def test_a_degraded_verdict_expires_far_sooner_than_a_real_one(tmp_path):
+    reg = make_registry()
+    _mock_library()
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_indexers(B, ["TPB"])
+    _mock_health(B, _failing("TPB"))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"degradedTtlMinutes": 60})
+    now = datetime.now(timezone.utc)
+
+    await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k", now=now)
+    await placement.refresh_availability(
+        reg, db, tvdb_id=TVDB, instance_id="4k", now=now + timedelta(minutes=90))
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_non_empty_result_is_trusted_even_during_a_total_outage(tmp_path):
+    """Releases came back, so something clearly answered."""
     reg = make_registry()
     _mock_library()
     respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[
         {"rejected": False, "protocol": "torrent", "seeders": 30, "guid": "g", "indexerId": 1},
     ]))
-    _mock_health(B, INDEXERS_DOWN)
+    _mock_indexers(B, ["TPB"])
+    _mock_health(B, _failing("TPB"))
     db = _db(tmp_path)
 
     rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
 
     assert rows[0]["qualifies"] is True
-    assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is not None
+    assert rows[0].get("degraded") is not True
 
 
 @respx.mock
 async def test_unreachable_health_endpoint_keeps_the_old_behaviour(tmp_path):
-    """If we can't tell, don't invent an outage — degrade to what we did before."""
+    """If capacity can't be established, don't gate -- over-triggering was the bug."""
     reg = make_registry()
     _mock_library()
     respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
     respx.get(f"{B}/api/v3/health").mock(return_value=httpx.Response(500))
+    respx.get(f"{B}/api/v3/indexer").mock(return_value=httpx.Response(500))
     db = _db(tmp_path)
 
     rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
 
-    assert rows[0].get("unknown") is not True
+    assert rows[0].get("degraded") is not True
     assert await avail_cache.get_cached(db, "4k", TVDB, 1, 2) is not None
 
 
 @respx.mock
-async def test_health_is_checked_once_per_refresh_not_once_per_episode(tmp_path):
+async def test_capacity_is_probed_once_per_refresh_not_once_per_episode(tmp_path):
     reg = make_registry()
     respx.get(f"{B}/api/v3/series").mock(
         return_value=httpx.Response(200, json=[{"id": 10, "tvdbId": TVDB, "title": "X"}]))
@@ -717,12 +765,12 @@ async def test_health_is_checked_once_per_refresh_not_once_per_episode(tmp_path)
          "monitored": True, "hasFile": False} for n in range(1, 7)
     ]))
     respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
-    route = respx.get(f"{B}/api/v3/health").mock(
-        return_value=httpx.Response(200, json=INDEXERS_DOWN))
+    _mock_indexers(B, ["TPB"])
+    h = respx.get(f"{B}/api/v3/health").mock(
+        return_value=httpx.Response(200, json=_failing("TPB")))
     db = _db(tmp_path)
 
     rows = await placement.refresh_availability(reg, db, tvdb_id=TVDB, instance_id="4k")
 
-    assert len(rows) == 6
-    assert all(r["unknown"] for r in rows)
-    assert route.call_count == 1
+    assert len(rows) == 6 and all(r["degraded"] for r in rows)
+    assert h.call_count == 1

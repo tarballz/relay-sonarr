@@ -21,6 +21,7 @@ export function useDialog(onClose) {
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    const opener = document.activeElement;
     const token = {};
     dialogStack.push(token);
     const node = ref.current;
@@ -61,6 +62,12 @@ export function useDialog(onClose) {
       document.removeEventListener("keydown", onKey, true);
       const i = dialogStack.indexOf(token);
       if (i >= 0) dialogStack.splice(i, 1);
+      // Restore focus to whatever opened the dialog — otherwise it drops to
+      // <body>, which is visible (a highlighted poster loses its outline) on
+      // the Library poster grid.
+      if (opener && document.contains(opener) && typeof opener.focus === "function") {
+        opener.focus();
+      }
     };
   }, []);
 

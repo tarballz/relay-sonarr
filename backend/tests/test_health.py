@@ -90,38 +90,60 @@ def test_manual_tick_endpoint_returns_result_or_409():
 
 # --- indexer degradation ------------------------------------------------------
 
-from app.services.health import indexers_degraded  # noqa: E402
+from app.services.health import failing_indexers, indexers_degraded  # noqa: E402
+
+SOME = {"source": "IndexerStatusCheck", "type": "warning",
+        "message": "Indexers unavailable due to failures: The Pirate Bay (Prowlarr)"}
+LONG = {"source": "IndexerLongTermStatusCheck", "type": "warning",
+        "message": "Indexers unavailable due to failures for more than 6 hours: "
+                   "1337x (Prowlarr), Internet Archive (Prowlarr)"}
+NONE_LEFT = {"source": "IndexerSearchCheck", "type": "error",
+             "message": "No indexers available with Interactive Search enabled, "
+                        "Sonarr will not provide any interactive search results"}
 
 
-def _h(source, type_="warning", message="..."):
-    return {"source": source, "type": type_, "message": message}
+def test_failing_indexers_parses_names_from_the_message():
+    assert failing_indexers([SOME]) == {"The Pirate Bay (Prowlarr)"}
+
+
+def test_failing_indexers_unions_short_and_long_term_without_double_counting():
+    assert failing_indexers([SOME, LONG]) == {
+        "The Pirate Bay (Prowlarr)", "1337x (Prowlarr)", "Internet Archive (Prowlarr)"}
+
+
+def test_failing_indexers_ignores_unrelated_checks():
+    assert failing_indexers([{"source": "UpdateCheck", "type": "warning",
+                              "message": "New update is available: v4.0"}]) == set()
+
+
+def test_a_minority_of_failing_indexers_is_not_degraded():
+    """The bug this replaces: any single failure tripped the gate, and with eight
+    public-tracker indexers at least one is always failing — so it tripped
+    permanently, discarded ~9000 searches a day and froze the cache."""
+    assert indexers_degraded([SOME, LONG], interactive_count=8) is False
+
+
+def test_every_indexer_failing_is_degraded():
+    assert indexers_degraded([SOME, LONG], interactive_count=3) is True
+
+
+def test_no_indexers_available_at_all_is_degraded():
+    assert indexers_degraded([NONE_LEFT], interactive_count=8) is True
 
 
 def test_no_health_issues_is_not_degraded():
-    assert indexers_degraded([]) is False
+    assert indexers_degraded([], interactive_count=8) is False
 
 
-def test_indexer_status_check_is_degraded():
-    assert indexers_degraded([_h("IndexerStatusCheck")]) is True
+def test_unknown_indexer_count_does_not_gate():
+    """If we can't prove capacity is gone, trust the result — over-triggering was
+    strictly worse than under-triggering, because it blocks its own repair path."""
+    assert indexers_degraded([SOME, LONG], interactive_count=None) is False
 
 
-def test_indexer_long_term_status_check_is_degraded():
-    assert indexers_degraded([_h("IndexerLongTermStatusCheck")]) is True
-
-
-def test_unrelated_warnings_are_not_degraded():
-    """A root-folder or update warning says nothing about search results."""
-    assert indexers_degraded([_h("RootFolderCheck"), _h("UpdateCheck")]) is False
-
-
-def test_an_indexer_error_counts_too():
-    assert indexers_degraded([_h("IndexerSearchCheck", "error")]) is True
-
-
-def test_an_informational_indexer_notice_does_not_count():
-    """Sonarr uses 'ok'/'notice' for things that aren't failures."""
-    assert indexers_degraded([_h("IndexerStatusCheck", "ok")]) is False
+def test_zero_configured_indexers_is_degraded():
+    assert indexers_degraded([], interactive_count=0) is True
 
 
 def test_missing_fields_are_tolerated():
-    assert indexers_degraded([{}, {"source": None}, {"type": "warning"}]) is False
+    assert indexers_degraded([{}, {"source": None}], interactive_count=8) is False

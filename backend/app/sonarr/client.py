@@ -255,6 +255,10 @@ class SonarrClient:
         """Blocklisted releases (GET /blocklist)."""
         return await self._get("/blocklist", {"page": page, "pageSize": page_size})
 
+    async def indexers(self) -> list[dict]:
+        """Configured indexers (GET /indexer). Used to size "are they all down?"."""
+        return await self._get("/indexer")
+
     async def releases(self, episode_id: int) -> list[dict]:
         """Interactive release search for an episode (GET /release?episodeId=)."""
         return await self._get(
