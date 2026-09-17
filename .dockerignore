@@ -1,0 +1,8 @@
+# Keep host build artifacts out of the image build context: a root-owned or
+# platform-specific frontend/node_modules must never shadow the image's own.
+frontend/node_modules*
+frontend/dist
+backend/.venv
+**/__pycache__
+.superpowers
+data

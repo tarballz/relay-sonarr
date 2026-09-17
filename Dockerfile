@@ -4,6 +4,8 @@ WORKDIR /fe
 COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./
+# A red suite fails the image rather than shipping a broken SPA.
+RUN npm test
 RUN npm run build
 
 # --- Stage 2: python runtime serving API + built SPA ------------------------
