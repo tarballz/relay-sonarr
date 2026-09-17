@@ -5,6 +5,7 @@ import { api, tierClass } from "../api.js";
 import { TierBadge, Spinner, Empty, ErrorState, bytes } from "../components/Shared.jsx";
 import { useToast } from "../components/ui/Toast.jsx";
 import { useTiers } from "../components/ui/TierProvider.jsx";
+import { useUrlState } from "../lib/urlState.js";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
 import PolicyEditor from "../components/PolicyEditor.jsx";
@@ -22,6 +23,8 @@ function StatusBadge({ status, paused }) {
   return <span className={`status-badge st-${status}`}>{status.replace("-", " ")}</span>;
 }
 
+const LIBRARY_DEFAULTS = { q: "", sort: "title", tier: "all", view: "grid" };
+
 export default function Library() {
   const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ["series"], queryFn: api.series });
   const { data: instances } = useQuery({ queryKey: ["instances"], queryFn: api.instances });
@@ -35,10 +38,7 @@ export default function Library() {
     [statusData]
   );
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState("all");
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("title"); // title | missing | size | status
-  const [view, setView] = useState("grid"); // posters by default — the cooler look
+  const [view, setView] = useUrlState(LIBRARY_DEFAULTS);
   const [removing, setRemoving] = useState(null); // series pending deletion
   const [resolving, setResolving] = useState(null); // series whose availability we're resolving
   const [editing, setEditing] = useState(null); // series whose policy we're editing
@@ -67,14 +67,14 @@ export default function Library() {
   }, [data]);
 
   const missingOf = (s) => (s.statistics?.episodeCount ?? 0) - (s.statistics?.episodeFileCount ?? 0);
-  const q = search.trim().toLowerCase();
+  const q = view.q.trim().toLowerCase();
   const rows = (data || [])
-    .filter((s) => filter === "all" || s.instanceId === filter)
+    .filter((s) => view.tier === "all" || s.instanceId === view.tier)
     .filter((s) => !q || (s.title || "").toLowerCase().includes(q))
     .sort((a, b) => {
-      if (sort === "missing") return missingOf(b) - missingOf(a);
-      if (sort === "size") return (b.statistics?.sizeOnDisk ?? 0) - (a.statistics?.sizeOnDisk ?? 0);
-      if (sort === "status") {
+      if (view.sort === "missing") return missingOf(b) - missingOf(a);
+      if (view.sort === "size") return (b.statistics?.sizeOnDisk ?? 0) - (a.statistics?.sizeOnDisk ?? 0);
+      if (view.sort === "status") {
         return (statusBy[a.tvdbId]?.status || "~").localeCompare(statusBy[b.tvdbId]?.status || "~");
       }
       return (a.sortTitle || a.title || "").localeCompare(b.sortTitle || b.title || "");
@@ -93,29 +93,29 @@ export default function Library() {
             type="search"
             placeholder="Search library…"
             aria-label="Search library by title"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={view.q}
+            onChange={(e) => setView({ q: e.target.value })}
           />
           <select
             className="input lib-sort"
             aria-label="Sort library"
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
+            value={view.sort}
+            onChange={(e) => setView({ sort: e.target.value })}
           >
             <option value="title">Title</option>
             <option value="missing">Most missing</option>
             <option value="size">Largest</option>
             <option value="status">Status</option>
           </select>
-          <button className={`btn ${filter === "all" ? "primary" : "ghost"}`} onClick={() => setFilter("all")}>All</button>
+          <button className={`btn ${view.tier === "all" ? "primary" : "ghost"}`} onClick={() => setView({ tier: "all" })}>All</button>
           {tiers.map((id) => (
-            <button key={id} className={`btn ${filter === id ? tierClass(id) : "ghost"}`} onClick={() => setFilter(id)}>
+            <button key={id} className={`btn ${view.tier === id ? tierClass(id) : "ghost"}`} onClick={() => setView({ tier: id })}>
               {nameOf(data, id)}
             </button>
           ))}
           <span className="view-toggle">
-            <button className={view === "grid" ? "on" : ""} onClick={() => setView("grid")} title="Poster grid" aria-label="Poster grid view">▦</button>
-            <button className={view === "table" ? "on" : ""} onClick={() => setView("table")} title="Table" aria-label="Table view">≣</button>
+            <button className={view.view === "grid" ? "on" : ""} onClick={() => setView({ view: "grid" })} title="Poster grid" aria-label="Poster grid view">▦</button>
+            <button className={view.view === "table" ? "on" : ""} onClick={() => setView({ view: "table" })} title="Table" aria-label="Table view">≣</button>
           </span>
         </div>
       </div>
@@ -123,11 +123,9 @@ export default function Library() {
       {isLoading && <div style={{ padding: 24 }}><Spinner /></div>}
       {isError && <ErrorState what="your library" error={error} onRetry={refetch} />}
       {data && data.length === 0 && <Empty big="Library is empty">Add a show from Search & Add.</Empty>}
-      {data && data.length > 0 && rows.length === 0 && (
-        <Empty big="No matches">Nothing matches “{search}”{filter !== "all" ? " in this tier" : ""}.</Empty>
-      )}
+      {data && data.length > 0 && rows.length === 0 && <Empty big='No matches'>Nothing matches &quot;{view.q}&quot;{view.tier !== 'all' ? ' in this tier' : ''}.</Empty>}
 
-      {rows.length > 0 && view === "grid" && (
+      {rows.length > 0 && view.view === "grid" && (
         <div className="poster-grid">
           {rows.map((s, idx) => {
             const stats = s.statistics || {};
@@ -204,7 +202,7 @@ export default function Library() {
         </div>
       )}
 
-      {rows.length > 0 && view === "table" && (
+      {rows.length > 0 && view.view === "table" && (
         <div className="panel" style={{ overflow: "hidden" }}>
           <table className="table">
             <thead>
