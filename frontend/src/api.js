@@ -1,58 +1,43 @@
-// Thin fetch wrapper over the backend's same-origin /api surface.
-async function req(path, opts = {}) {
-  const res = await fetch(`/api${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      detail = (await res.json()).detail || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
-  return res.json();
-}
+import { request } from "./lib/http.js";
+
+// Thin adapter so the method bodies below stay one-liners.
+const get = (path, opts) => request(path, opts);
+const send = (method) => (path, body, opts) => request(path, { method, body, ...opts });
+const post = send("POST");
+const put = send("PUT");
+const del = send("DELETE");
 
 export const api = {
-  instances: () => req("/instances"),
-  settings: () => req("/settings"),
-  setFallbackChains: (body) =>
-    req("/settings/fallback-chains", { method: "PUT", body: JSON.stringify(body) }),
-  search: (term) => req(`/search?term=${encodeURIComponent(term)}`),
-  series: () => req("/series"),
-  queue: () => req("/queue"),
-  profiles: (id) => req(`/instances/${id}/profiles`),
-  rootFolders: (id) => req(`/instances/${id}/root-folders`),
-  add: (body) => req("/add", { method: "POST", body: JSON.stringify(body) }),
-  smartAdd: (body) => req("/smart-add", { method: "POST", body: JSON.stringify(body) }),
-  advanceFallback: (body) =>
-    req("/advance-fallback", { method: "POST", body: JSON.stringify(body) }),
-  availability: (instanceId, seriesId) =>
-    req(`/availability?instanceId=${instanceId}&seriesId=${seriesId}`),
-  operations: () => req("/operations"),
-  removeSeries: (instanceId, seriesId, deleteFiles = false) =>
-    req(`/instances/${instanceId}/series/${seriesId}?deleteFiles=${deleteFiles}`, {
-      method: "DELETE",
-    }),
+  instances: (opts) => get("/instances", opts),
+  settings: (opts) => get("/settings", opts),
+  setFallbackChains: (body, opts) => put("/settings/fallback-chains", body, opts),
+  search: (term, opts) => get(`/search?term=${encodeURIComponent(term)}`, opts),
+  series: (opts) => get("/series", opts),
+  queue: (opts) => get("/queue", opts),
+  profiles: (id, opts) => get(`/instances/${id}/profiles`, opts),
+  rootFolders: (id, opts) => get(`/instances/${id}/root-folders`, opts),
+  add: (body, opts) => post("/add", body, opts),
+  smartAdd: (body, opts) => post("/smart-add", body, opts),
+  advanceFallback: (body, opts) => post("/advance-fallback", body, opts),
+  availability: (instanceId, seriesId, opts) =>
+    get(`/availability?instanceId=${instanceId}&seriesId=${seriesId}`, opts),
+  operations: (opts) => get("/operations", opts),
+  removeSeries: (instanceId, seriesId, deleteFiles = false, opts) =>
+    del(`/instances/${instanceId}/series/${seriesId}?deleteFiles=${deleteFiles}`, null, opts),
   // Reconciler / policy surface.
-  libraryStatus: () => req("/library/status"),
-  plan: (tvdb) => req(`/series/${tvdb}/plan`),
-  planRefresh: (tvdb, target) =>
-    req(`/series/${tvdb}/plan?refresh=${encodeURIComponent(target)}`),
-  policy: (tvdb) => req(`/series/${tvdb}/policy`),
-  setPolicy: (tvdb, body) =>
-    req(`/series/${tvdb}/policy`, { method: "PUT", body: JSON.stringify(body) }),
-  pauseSeries: (tvdb) => req(`/series/${tvdb}/pause`, { method: "POST" }),
-  resumeSeries: (tvdb) => req(`/series/${tvdb}/resume`, { method: "POST" }),
-  reconcileSeries: (tvdb) => req(`/series/${tvdb}/reconcile`, { method: "POST" }),
-  reconcileTick: () => req("/reconcile/tick", { method: "POST" }),
-  reconcilerStatus: () => req("/reconciler/status"),
-  defaults: () => req("/settings/defaults"),
-  setDefaults: (body) =>
-    req("/settings/defaults", { method: "PUT", body: JSON.stringify(body) }),
+  libraryStatus: (opts) => get("/library/status", opts),
+  plan: (tvdb, opts) => get(`/series/${tvdb}/plan`, opts),
+  planRefresh: (tvdb, target, opts) =>
+    get(`/series/${tvdb}/plan?refresh=${encodeURIComponent(target)}`, opts),
+  policy: (tvdb, opts) => get(`/series/${tvdb}/policy`, opts),
+  setPolicy: (tvdb, body, opts) => put(`/series/${tvdb}/policy`, body, opts),
+  pauseSeries: (tvdb, opts) => post(`/series/${tvdb}/pause`, null, opts),
+  resumeSeries: (tvdb, opts) => post(`/series/${tvdb}/resume`, null, opts),
+  reconcileSeries: (tvdb, opts) => post(`/series/${tvdb}/reconcile`, null, opts),
+  reconcileTick: (opts) => post("/reconcile/tick", null, opts),
+  reconcilerStatus: (opts) => get("/reconciler/status", opts),
+  defaults: (opts) => get("/settings/defaults", opts),
+  setDefaults: (body, opts) => put("/settings/defaults", body, opts),
 };
 
 // Open an SSE stream to a GET endpoint and dispatch step/result/error callbacks.
