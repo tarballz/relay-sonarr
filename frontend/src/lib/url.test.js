@@ -34,6 +34,20 @@ describe("safeBackgroundUrl", () => {
     expect(safe).toContain("%22");
   });
 
+  it("encodes a trailing backslash in the query string so it can't escape the closing quote", () => {
+    const raw = "https://example.com/a?x=1\\";
+    const safe = safeBackgroundUrl(raw);
+    expect(safe).not.toContain("\\");
+    expect(safe).toContain("%5C");
+  });
+
+  it("encodes a backslash mid-query so it can't escape the closing quote", () => {
+    const raw = "https://example.com/a?x=1\\end";
+    const safe = safeBackgroundUrl(raw);
+    expect(safe).not.toContain("\\");
+    expect(safe).toContain("%5C");
+  });
+
   it("returns null for a non-parseable string", () => {
     expect(safeBackgroundUrl("not a url at all")).toBeNull();
   });
