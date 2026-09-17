@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, streamAdvance, streamReattempt, streamFillGaps } from "../api.js";
 import { useToast } from "./ui/Toast.jsx";
-import { useDialog } from "./useDialog.js";
+import Dialog from "./ui/Dialog.jsx";
+import { useStreamFlow } from "./ui/useStreamFlow.js";
 import ProgressStream from "./ProgressStream.jsx";
 import ResolutionOptions from "./ResolutionOptions.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
@@ -25,13 +25,13 @@ export default function ResolveDialog({
 }) {
   const toast = useToast();
   const [roadblock, setRoadblock] = useState(initial);
-  const [steps, setSteps] = useState([]);
-  const [streaming, setStreaming] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null);
   const [busy, setBusy] = useState(false);
   const qc = useQueryClient();
   const started = useRef(false);
-  const dialogRef = useDialog(onClose);
+  // Renamed from the stream flow's `busy` to avoid colliding with the
+  // remove-confirm `busy` state above.
+  const { flow, run, busy: streaming, canShowFooter } = useStreamFlow();
 
   function done(msg) {
     if (msg) toast(msg);
@@ -41,7 +41,6 @@ export default function ResolveDialog({
   }
 
   function handleTerminal(res) {
-    setStreaming(false);
     if (res.status === "fallback_suggested" || res.status === "exhausted") {
       setRoadblock(res);
       return;
@@ -62,19 +61,9 @@ export default function ResolveDialog({
 
   function runStream(fn, params) {
     setRoadblock(null);
-    setSteps([]);
-    setStreaming(true);
-    fn(
-      { ...params, title: series.title },
-      {
-        onStep: (e) => setSteps((s) => [...s, e]),
-        onResult: handleTerminal,
-        onError: (m) => {
-          setStreaming(false);
-          toast(m, true);
-        },
-      }
-    );
+    run(fn, { ...params, title: series.title }, {
+      onResult: handleTerminal,
+    });
   }
 
   // Library entry: re-search the existing series in place as soon as we open.
@@ -126,39 +115,32 @@ export default function ResolveDialog({
     }
   }
 
-  const inFlight = streaming || steps.length > 0;
+  // Once a stream has ever run, stay on the progress/resolution view rather
+  // than reverting to the "checking…" placeholder.
+  const inFlight = flow.phase !== "idle";
+
   return (
     <>
-      <div className="scrim" onClick={onClose}>
-        <motion.div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Resolve ${series.title}`}
-          tabIndex={-1}
-          className="dialog"
-          onClick={(e) => e.stopPropagation()}
-          initial={{ opacity: 0, y: 16, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.2, ease: [0.2, 0.7, 0.2, 1] }}
-        >
-          <div className="dialog-head">
-            <h2>{series.title}</h2>
-            <div className="meta" style={{ marginTop: 6 }}>
-              <span className="mono">tvdb {series.tvdbId}</span>
-            </div>
-          </div>
-          <div className="dialog-body">
-            {inFlight && <ProgressStream steps={steps} />}
-            {roadblock && (
-              <ResolutionOptions data={roadblock} series={series} onDispatch={dispatchOption} />
-            )}
-            {!inFlight && !roadblock && (
-              <div style={{ padding: "8px 0", color: "var(--ink-dim)" }}>Checking availability…</div>
-            )}
-          </div>
-        </motion.div>
-      </div>
+      <Dialog
+        title={series.title}
+        label={`Resolve ${series.title}`}
+        onClose={onClose}
+        busy={streaming}
+        subtitle={<span className="mono">tvdb {series.tvdbId}</span>}
+        footer={
+          canShowFooter ? (
+            <button className="btn ghost" onClick={onClose}>Close</button>
+          ) : null
+        }
+      >
+        {inFlight && <ProgressStream steps={flow.steps} />}
+        {roadblock && (
+          <ResolutionOptions data={roadblock} series={series} onDispatch={dispatchOption} />
+        )}
+        {!inFlight && !roadblock && (
+          <div style={{ padding: "8px 0", color: "var(--ink-dim)" }}>Checking availability…</div>
+        )}
+      </Dialog>
       {confirmRemove && (
         <ConfirmDialog
           title={`Remove “${series.title}”?`}

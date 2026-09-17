@@ -99,90 +99,21 @@ export default function PolicyEditor({ series, instances, onClose }) {
   }
 
   return (
-    <div className="scrim" onClick={onClose}>
-      <motion.div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Policy for ${series.title}`}
-        tabIndex={-1}
-        className="dialog"
-        onClick={(e) => e.stopPropagation()}
-        initial={{ opacity: 0, y: 16, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.2, ease: [0.2, 0.7, 0.2, 1] }}
-      >
-        <div className="dialog-head">
-          <h2>{series.title}</h2>
-          <div className="meta" style={{ marginTop: 6 }}>
-            <span className="mono">tvdb {series.tvdbId}</span>
-            {paused && <span style={{ color: "var(--ink-faint)" }}>· paused</span>}
-          </div>
-        </div>
-
-        <div className="dialog-body">
-          {!policy ? (
-            <div style={{ padding: "8px 0" }}><Spinner /></div>
-          ) : (
-            <>
-              <div className="section-label">Preferred tier</div>
-              <select
-                className="input"
-                value={policy.preferredTier}
-                onChange={(e) => patch({ preferredTier: e.target.value })}
-              >
-                {instances.map((i) => (
-                  <option key={i.id} value={i.id}>{i.name}</option>
-                ))}
-              </select>
-
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={policy.allowSplit}
-                  onChange={(e) => patch({ allowSplit: e.target.checked })}
-                />
-                Allow per-episode split across tiers
-              </label>
-
-              <div className="section-label">Fallback tiers</div>
-              {(policy.fallbacks || []).map((s, i) => (
-                <div key={i} className={`policy-step ${tierClass(s.instanceId)}`}>
-                  <select
-                    className="input"
-                    value={s.instanceId}
-                    onChange={(e) => setStep(i, { instanceId: e.target.value })}
-                  >
-                    {instances.map((inst) => (
-                      <option key={inst.id} value={inst.id}>{inst.name}</option>
-                    ))}
-                  </select>
-                  <input
-                    className="input"
-                    placeholder="profile (optional)"
-                    value={s.profile || ""}
-                    onChange={(e) => setStep(i, { profile: e.target.value || null })}
-                  />
-                  <input
-                    className="input policy-days"
-                    type="number"
-                    min="0"
-                    title="Only spill here after this many days"
-                    value={s.afterDays ?? 0}
-                    onChange={(e) => setStep(i, { afterDays: Number(e.target.value) })}
-                  />
-                  <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>days</span>
-                  <button className="row-del" onClick={() => removeStep(i)}>✕</button>
-                </div>
-              ))}
-              <button className="btn ghost" onClick={addStep} style={{ alignSelf: "flex-start" }}>
-                + Add fallback tier
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="dialog-foot" style={{ justifyContent: "space-between" }}>
+    <Dialog
+      title={series.title}
+      label={`Policy for ${series.title}`}
+      onClose={onClose}
+      subtitle={
+        <>
+          <span className="mono">tvdb {series.tvdbId}</span>
+          {paused && <span style={{ color: "var(--ink-faint)" }}>· paused</span>}
+        </>
+      }
+      footer={
+        // Two button groups spread across the footer — the outer .dialog-foot is
+        // a flex row justified to the end, so this inner row opts back into
+        // space-between across its own full width.
+        <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn ghost" onClick={togglePause} disabled={busy || !policy}>
               {paused ? "Resume" : "Pause"}
@@ -198,7 +129,67 @@ export default function PolicyEditor({ series, instances, onClose }) {
             </button>
           </div>
         </div>
-      </motion.div>
-    </div>
+      }
+    >
+      {!policy ? (
+        <div style={{ padding: "8px 0" }}><Spinner /></div>
+      ) : (
+        <>
+          <div className="section-label">Preferred tier</div>
+          <select
+            className="input"
+            value={policy.preferredTier}
+            onChange={(e) => patch({ preferredTier: e.target.value })}
+          >
+            {instances.map((i) => (
+              <option key={i.id} value={i.id}>{i.name}</option>
+            ))}
+          </select>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={policy.allowSplit}
+              onChange={(e) => patch({ allowSplit: e.target.checked })}
+            />
+            Allow per-episode split across tiers
+          </label>
+
+          <div className="section-label">Fallback tiers</div>
+          {(policy.fallbacks || []).map((s, i) => (
+            <div key={i} className={`policy-step ${tierClass(s.instanceId)}`}>
+              <select
+                className="input"
+                value={s.instanceId}
+                onChange={(e) => setStep(i, { instanceId: e.target.value })}
+              >
+                {instances.map((inst) => (
+                  <option key={inst.id} value={inst.id}>{inst.name}</option>
+                ))}
+              </select>
+              <input
+                className="input"
+                placeholder="profile (optional)"
+                value={s.profile || ""}
+                onChange={(e) => setStep(i, { profile: e.target.value || null })}
+              />
+              <input
+                className="input policy-days"
+                type="number"
+                min="0"
+                title="Only spill here after this many days"
+                value={s.afterDays ?? 0}
+                onChange={(e) => setStep(i, { afterDays: Number(e.target.value) })}
+              />
+              <span style={{ fontSize: 12, color: "var(--ink-faint)" }}>days</span>
+              <button className="row-del" onClick={() => removeStep(i)}>✕</button>
+            </div>
+          ))}
+          <button className="btn ghost" onClick={addStep} style={{ alignSelf: "flex-start" }}>
+            + Add fallback tier
+          </button>
+        </>
+      )}
+    </Dialog>
   );
 }

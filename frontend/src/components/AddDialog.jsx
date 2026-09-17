@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -11,16 +10,11 @@ import {
 } from "../api.js";
 import { TierBadge, Spinner } from "./Shared.jsx";
 import { useToast } from "./ui/Toast.jsx";
-import { useDialog } from "./useDialog.js";
+import Dialog from "./ui/Dialog.jsx";
+import { useStreamFlow } from "./ui/useStreamFlow.js";
 import ProgressStream from "./ProgressStream.jsx";
 import ResolutionOptions from "./ResolutionOptions.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
-
-// Pull a show's fanart (backdrop) URL from its images, if present.
-function fanartUrl(series) {
-  const img = (series.images || []).find((i) => i.coverType === "fanart");
-  return img?.remoteUrl || img?.url || null;
-}
 
 // Per-instance add dialog. One toggle per configured tier; each carries its own
 // quality-profile + root-folder pickers. Adding a single tier that has a
@@ -32,13 +26,13 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
   const [sel, setSel] = useState({}); // id -> bool
   const [busy, setBusy] = useState(false);
   const [roadblock, setRoadblock] = useState(null); // fallback_suggested | exhausted result
-  const [streaming, setStreaming] = useState(false);
-  const [steps, setSteps] = useState([]); // live progress events for the current op
   const [confirmRemove, setConfirmRemove] = useState(null); // {instanceId, seriesId} awaiting confirm
   const [monitorAll, setMonitorAll] = useState(true); // monitor every season vs a chosen subset
   const [seasonSel, setSeasonSel] = useState({}); // seasonNumber -> bool (only used when !monitorAll)
   const queryClient = useQueryClient();
-  const dialogRef = useDialog(onClose);
+  // Renamed from the stream flow's `busy` to avoid colliding with the plain
+  // multi-add / remove-confirm `busy` state above.
+  const { flow, run, busy: streaming, canShowFooter } = useStreamFlow();
 
   // The show's seasons from the lookup, sorted; specials (0) last and off by default.
   const seasonList = (series.seasons || [])
@@ -125,27 +119,12 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
     onClose();
   }
 
-  // Common handlers for any roadblock stream.
-  function streamHandlers(fallbackToastName) {
-    return {
-      onStep: (e) => setSteps((s) => [...s, e]),
-      onResult: (res) => {
-        setStreaming(false);
-        handleTerminal(res, fallbackToastName);
-      },
-      onError: (msg) => {
-        setStreaming(false);
-        toast(msg, true);
-      },
-    };
-  }
-
   // Start one of the resolution streams, switching the dialog to the live view.
   function runStream(streamFn, params) {
     setRoadblock(null);
-    setSteps([]);
-    setStreaming(true);
-    streamFn({ ...params, title: series.title }, streamHandlers());
+    run(streamFn, { ...params, title: series.title }, {
+      onResult: (res) => handleTerminal(res),
+    });
   }
 
   // Route a chosen resolution option to the right endpoint.
@@ -191,9 +170,8 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
     if (chosen.length === 1 && fallbackChains?.[chosen[0].id]?.length) {
       const t = chosen[0];
       const o = opts[t.id];
-      setSteps([]);
-      setStreaming(true);
-      streamSmartAdd(
+      run(
+        streamSmartAdd,
         {
           tvdbId: series.tvdbId,
           targetInstanceId: t.id,
@@ -202,7 +180,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
           monitoredSeasons,
           title: series.title,
         },
-        streamHandlers(t.name)
+        { onResult: (res) => handleTerminal(res, t.name) }
       );
       return;
     }
@@ -230,119 +208,28 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
   }
 
   const loading = Object.keys(opts).length === 0;
-  const inFlight = streaming || steps.length > 0; // showing the live play-by-play
-  const backdrop = fanartUrl(series);
+  // Once a stream has ever run, stay on the progress/resolution view rather
+  // than reverting to the tier picker — mirrors the old steps-never-clear
+  // behaviour without keying off steps.length.
+  const inFlight = flow.phase !== "idle";
 
   return (
     <>
-      <div className="scrim" onClick={onClose}>
-        <motion.div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Add ${series.title}`}
-          tabIndex={-1}
-          className="dialog"
-          onClick={(e) => e.stopPropagation()}
-          initial={{ opacity: 0, y: 16, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.22, ease: [0.2, 0.7, 0.2, 1] }}
-        >
-          <div className="dialog-head">
-            {backdrop && (
-              <div className="dialog-backdrop" style={{ backgroundImage: `url(${backdrop})` }} />
-            )}
-            <h2>{series.title}</h2>
-            <div className="meta" style={{ marginTop: 6 }}>
-              {series.year ? <span>{series.year}</span> : null}
-              {series.network ? <span>· {series.network}</span> : null}
-              <span className="mono">tvdb {series.tvdbId}</span>
-            </div>
-          </div>
-
-          <div className="dialog-body">
-            {inFlight ? (
-              <>
-                <ProgressStream steps={steps} />
-                {roadblock && (
-                  <ResolutionOptions
-                    data={roadblock}
-                    series={series}
-                    onDispatch={dispatchOption}
-                  />
-                )}
-              </>
-            ) : loading ? (
-              <div style={{ padding: "8px 0" }}>
-                <Spinner /> <span style={{ color: "var(--ink-dim)", marginLeft: 8 }}>Loading profiles…</span>
-              </div>
-            ) : (
-              <>
-                {seasonList.length > 0 && (
-                  <>
-                    <div className="section-label">Monitor</div>
-                    <div className="monitor-choice">
-                      <button
-                        className={`seg ${monitorAll ? "on" : ""}`}
-                        onClick={() => setMonitorAll(true)}
-                      >
-                        All episodes
-                      </button>
-                      <button
-                        className={`seg ${!monitorAll ? "on" : ""}`}
-                        onClick={() => setMonitorAll(false)}
-                      >
-                        Choose seasons
-                      </button>
-                    </div>
-                    {!monitorAll && (
-                      <div className="season-picker">
-                        {seasonList.map((n) => (
-                          <label key={n} className={`season-chip ${seasonSel[n] ? "on" : ""}`}>
-                            <input
-                              type="checkbox"
-                              checked={!!seasonSel[n]}
-                              onChange={() => toggleSeason(n)}
-                            />
-                            {n === 0 ? "Specials" : `S${n}`}
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-                <div className="section-label">Send to</div>
-                {instances.map((i) => {
-                  const o = opts[i.id] || {};
-                  const on = !!sel[i.id];
-                  return (
-                    <div key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`} onClick={() => toggle(i.id)}>
-                      <span className="check">{on ? "✓" : ""}</span>
-                      <TierBadge instanceId={i.id} name={i.name} />
-                      {on && !o.error && (
-                        <div className="opts" onClick={(e) => e.stopPropagation()}>
-                          <select className="input" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
-                            {o.profiles.map((p) => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                          </select>
-                          <select className="input" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
-                            {o.rootFolders.map((r) => (
-                              <option key={r.path} value={r.path}>{r.path}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {on && o.error && <span style={{ marginLeft: "auto", color: "var(--danger)", fontSize: 12 }}>unreachable</span>}
-                    </div>
-                  );
-                })}
-              </>
-            )}
-          </div>
-
-          {!inFlight && !loading && (
-            <div className="dialog-foot">
+      <Dialog
+        title={series.title}
+        label={`Add ${series.title}`}
+        onClose={onClose}
+        busy={streaming}
+        subtitle={
+          <>
+            {series.year ? <span>{series.year}</span> : null}
+            {series.network ? <span>· {series.network}</span> : null}
+            <span className="mono">tvdb {series.tvdbId}</span>
+          </>
+        }
+        footer={
+          canShowFooter && !loading ? (
+            <>
               <button className="btn ghost" onClick={onClose}>Cancel</button>
               <button
                 className="btn primary"
@@ -351,10 +238,89 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
               >
                 {busy ? <Spinner /> : `Add${chosen.length ? ` to ${chosen.length} tier${chosen.length > 1 ? "s" : ""}` : ""}`}
               </button>
-            </div>
-          )}
-        </motion.div>
-      </div>
+            </>
+          ) : null
+        }
+      >
+        {inFlight ? (
+          <>
+            <ProgressStream steps={flow.steps} />
+            {roadblock && (
+              <ResolutionOptions
+                data={roadblock}
+                series={series}
+                onDispatch={dispatchOption}
+              />
+            )}
+          </>
+        ) : loading ? (
+          <div style={{ padding: "8px 0" }}>
+            <Spinner /> <span style={{ color: "var(--ink-dim)", marginLeft: 8 }}>Loading profiles…</span>
+          </div>
+        ) : (
+          <>
+            {seasonList.length > 0 && (
+              <>
+                <div className="section-label">Monitor</div>
+                <div className="monitor-choice">
+                  <button
+                    className={`seg ${monitorAll ? "on" : ""}`}
+                    onClick={() => setMonitorAll(true)}
+                  >
+                    All episodes
+                  </button>
+                  <button
+                    className={`seg ${!monitorAll ? "on" : ""}`}
+                    onClick={() => setMonitorAll(false)}
+                  >
+                    Choose seasons
+                  </button>
+                </div>
+                {!monitorAll && (
+                  <div className="season-picker">
+                    {seasonList.map((n) => (
+                      <label key={n} className={`season-chip ${seasonSel[n] ? "on" : ""}`}>
+                        <input
+                          type="checkbox"
+                          checked={!!seasonSel[n]}
+                          onChange={() => toggleSeason(n)}
+                        />
+                        {n === 0 ? "Specials" : `S${n}`}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            <div className="section-label">Send to</div>
+            {instances.map((i) => {
+              const o = opts[i.id] || {};
+              const on = !!sel[i.id];
+              return (
+                <div key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`} onClick={() => toggle(i.id)}>
+                  <span className="check">{on ? "✓" : ""}</span>
+                  <TierBadge instanceId={i.id} name={i.name} />
+                  {on && !o.error && (
+                    <div className="opts" onClick={(e) => e.stopPropagation()}>
+                      <select className="input" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
+                        {o.profiles.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                      <select className="input" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
+                        {o.rootFolders.map((r) => (
+                          <option key={r.path} value={r.path}>{r.path}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {on && o.error && <span style={{ marginLeft: "auto", color: "var(--danger)", fontSize: 12 }}>unreachable</span>}
+                </div>
+              );
+            })}
+          </>
+        )}
+      </Dialog>
 
       {confirmRemove && (
         <ConfirmDialog
