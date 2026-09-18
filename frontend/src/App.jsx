@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api.js";
 import { ToastProvider } from "./components/ui/Toast.jsx";
 import { TierProvider } from "./components/ui/TierProvider.jsx";
+import NotFound from "./components/ui/NotFound.jsx";
+import { useDialog } from "./components/useDialog.js";
 import SearchAdd from "./pages/SearchAdd.jsx";
 import Activity from "./pages/Activity.jsx";
 import Library from "./pages/Library.jsx";
@@ -19,7 +21,20 @@ const NAV = [
   { to: "/settings", label: "Settings", ico: "⚙" },
 ];
 
-function Sidebar({ open, onClose }) {
+const SIDEBAR_ID = "sidebar-nav";
+
+// Traps focus inside the mobile drawer and closes it on Escape, mirroring the
+// dialog pattern (`useDialog`). Mounted only while the drawer is open, since
+// `useDialog`'s effect runs once per mount — the drawer's own DOM node (held
+// in `panelRef`, always mounted for its CSS slide transition) is attached to
+// the hook's ref during render, before that effect fires.
+function DrawerFocusTrap({ onClose, panelRef }) {
+  const dialogRef = useDialog(onClose);
+  dialogRef.current = panelRef.current;
+  return null;
+}
+
+const Sidebar = forwardRef(function Sidebar({ open, onClose }, ref) {
   const { data: instances } = useQuery({
     queryKey: ["instances"],
     queryFn: api.instances,
@@ -33,7 +48,7 @@ function Sidebar({ open, onClose }) {
   const recState = !rec ? null : !rec.enabled ? "off" : !rec.healthy ? "err" : "ok";
 
   return (
-    <aside className={`sidebar${open ? " open" : ""}`}>
+    <aside id={SIDEBAR_ID} ref={ref} className={`sidebar${open ? " open" : ""}`}>
       <div className="brand">
         <div className="brand-mark">
           relay<span className="dot">.</span>
@@ -50,7 +65,7 @@ function Sidebar({ open, onClose }) {
             onClick={onClose}
             className={({ isActive }) => (isActive ? "active" : "")}
           >
-            <span className="ico">{n.ico}</span>
+            <span className="ico" aria-hidden="true">{n.ico}</span>
             {n.label}
           </NavLink>
         ))}
@@ -70,11 +85,12 @@ function Sidebar({ open, onClose }) {
       </div>
     </aside>
   );
-}
+});
 
 export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const closeDrawer = () => setDrawerOpen(false);
+  const sidebarRef = useRef(null);
 
   // Lock body scroll while the mobile drawer is open.
   useEffect(() => {
@@ -89,12 +105,14 @@ export default function App() {
       <ToastProvider>
         <TierProvider>
           <div className="shell">
+            <a className="skip-link" href="#main">Skip to content</a>
             {/* Mobile-only top bar (hidden ≥861px via CSS) */}
             <header className="topbar">
               <button
                 className="topbar-burger"
                 aria-label={drawerOpen ? "Close menu" : "Open menu"}
                 aria-expanded={drawerOpen}
+                aria-controls={SIDEBAR_ID}
                 onClick={() => setDrawerOpen((v) => !v)}
               >
                 {drawerOpen ? "✕" : "☰"}
@@ -114,15 +132,17 @@ export default function App() {
               aria-hidden="true"
             />
 
-            <Sidebar open={drawerOpen} onClose={closeDrawer} />
+            <Sidebar ref={sidebarRef} open={drawerOpen} onClose={closeDrawer} />
+            {drawerOpen && <DrawerFocusTrap onClose={closeDrawer} panelRef={sidebarRef} />}
 
-            <main className="main">
+            <main className="main" id="main" tabIndex={-1}>
               <Routes>
                 <Route path="/" element={<SearchAdd />} />
                 <Route path="/activity" element={<Activity />} />
                 <Route path="/library" element={<Library />} />
                 <Route path="/operations" element={<Operations />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="*" element={<NotFound />} />
               </Routes>
             </main>
           </div>

@@ -305,17 +305,23 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
               const o = opts[i.id] || {};
               const on = !!sel[i.id];
               return (
-                <div key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`} onClick={() => toggle(i.id)}>
+                <label key={i.id} className={`tier-toggle ${tierClass(i.id)} ${on ? "on" : ""}`}>
+                  <input
+                    type="checkbox"
+                    className="tier-toggle-input"
+                    checked={on}
+                    onChange={() => toggle(i.id)}
+                  />
                   <span className="check">{on ? "✓" : ""}</span>
                   <TierBadge instanceId={i.id} name={i.name} />
                   {on && !o.error && (
                     <div className="opts" onClick={(e) => e.stopPropagation()}>
-                      <select className="input" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
+                      <select className="input" aria-label="Quality profile" value={o.profileId} onChange={(e) => setOpt(i.id, "profileId", Number(e.target.value))}>
                         {o.profiles.map((p) => (
                           <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
                       </select>
-                      <select className="input" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
+                      <select className="input" aria-label="Root folder" value={o.rootFolderPath} onChange={(e) => setOpt(i.id, "rootFolderPath", e.target.value)}>
                         {o.rootFolders.map((r) => (
                           <option key={r.path} value={r.path}>{r.path}</option>
                         ))}
@@ -323,7 +329,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
                     </div>
                   )}
                   {on && o.error && <span style={{ marginLeft: "auto", color: "var(--danger)", fontSize: 12 }}>unreachable</span>}
-                </div>
+                </label>
               );
             })}
           </>

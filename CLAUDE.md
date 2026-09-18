@@ -158,9 +158,9 @@ default 30 min).
 ## Frontend
 
 React + Vite + TanStack Query + react-router. `src/api.js` is the single same-origin `/api`
-wrapper; `openStream` drives the SSE endpoints (closes on first terminal event to defeat
-EventSource auto-reconnect). `tierClass()` maps instance id → color (teal=1080p, amber=4k) by
-substring match. Pages in `src/pages/`, dialogs/shared in `src/components/`.
+wrapper; `src/lib/stream.js`'s `openStream` drives the SSE endpoints (closes on first terminal
+event to defeat EventSource auto-reconnect). `tierClass()` maps instance id → color (teal=1080p,
+amber=4k) by substring match. Pages in `src/pages/`, dialogs/shared in `src/components/`.
 
 ## Auth
 

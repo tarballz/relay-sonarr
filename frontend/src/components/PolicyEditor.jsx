@@ -138,6 +138,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
           <div className="section-label">Preferred tier</div>
           <select
             className="input"
+            aria-label="Preferred tier"
             value={policy.preferredTier}
             onChange={(e) => patch({ preferredTier: e.target.value })}
           >
@@ -160,6 +161,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
             <div key={i} className={`policy-step ${tierClass(s.instanceId)}`}>
               <select
                 className="input"
+                aria-label="Fallback instance"
                 value={s.instanceId}
                 onChange={(e) => setStep(i, { instanceId: e.target.value })}
               >
@@ -170,6 +172,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
               <input
                 className="input"
                 placeholder="profile (optional)"
+                aria-label="Quality profile name"
                 value={s.profile || ""}
                 onChange={(e) => setStep(i, { profile: e.target.value || null })}
               />
@@ -178,6 +181,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
                 type="number"
                 min="0"
                 title="Only spill here after this many days"
+                aria-label="Spill after this many days"
                 value={s.afterDays ?? 0}
                 onChange={(e) => setStep(i, { afterDays: Number(e.target.value) })}
               />

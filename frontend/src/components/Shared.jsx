@@ -8,7 +8,7 @@ export function TierBadge({ instanceId, name }) {
 }
 
 export function Spinner() {
-  return <span className="spinner" aria-label="loading" />;
+  return <span className="spinner" role="status" aria-label="Loading" />;
 }
 
 export function Empty({ big, children }) {

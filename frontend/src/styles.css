@@ -615,6 +615,14 @@ body:has(.scrim) {
   font-size: 12.5px;
   background-position: right 11px center, right 6px center;
 }
+.tier-toggle-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.tier-toggle:has(.tier-toggle-input:focus-visible) {
+  box-shadow: var(--focus-ring);
+}
 
 label.field {
   display: flex;
@@ -1517,6 +1525,14 @@ label.field {
 /* ============================================================
    Accessibility: focus visibility + reduced motion
    ============================================================ */
+
+.skip-link {
+  position: absolute; left: -9999px; top: var(--s-2);
+  background: var(--panel); color: var(--ink);
+  padding: var(--s-2) var(--s-3); border-radius: var(--radius-sm);
+  border: 1px solid var(--line); z-index: var(--z-toast);
+}
+.skip-link:focus { left: var(--s-2); }
 
 /* Keyboard focus was invisible everywhere: only .input:focus existed. */
 .btn:focus-visible,

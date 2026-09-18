@@ -229,11 +229,12 @@ function DefaultsEditor({ toast, qc }) {
             className="input"
             type="number"
             min="1"
+            aria-describedby="defaults-deadhours-help"
             value={form.deadHours}
             onChange={(e) => setForm((f) => ({ ...f, deadHours: Number(e.target.value) }))}
           />
         </label>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+        <div className="muted" id="defaults-deadhours-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           Needs a download client configured in config.yaml — Sonarr reports a dead
           torrent as "ok", so only the client can tell one apart from a slow one.
           Without it this field has no effect and the day-based threshold applies.
@@ -245,11 +246,12 @@ function DefaultsEditor({ toast, qc }) {
             type="number"
             min="1"
             max="100"
+            aria-describedby="defaults-nearcomplete-help"
             value={form.nearCompletePct}
             onChange={(e) => setForm((f) => ({ ...f, nearCompletePct: Number(e.target.value) }))}
           />
         </label>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+        <div className="muted" id="defaults-nearcomplete-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           A removal blocklists the release, so the replacement restarts from zero.
           Downloads above this mark keep a 3-day grace instead. Set to 100 to disable.
         </div>
@@ -259,11 +261,12 @@ function DefaultsEditor({ toast, qc }) {
             className="input"
             type="number"
             min="0"
+            aria-describedby="defaults-regrabcap-help"
             value={form.regrabCap}
             onChange={(e) => setForm((f) => ({ ...f, regrabCap: Number(e.target.value) }))}
           />
         </label>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+        <div className="muted" id="defaults-regrabcap-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           After removing a dead torrent Relay searches and grabs the best-seeded
           replacement itself, because Sonarr's own re-search ranks by quality and
           often re-picks another dead release. Each one costs a slow interactive
@@ -275,11 +278,12 @@ function DefaultsEditor({ toast, qc }) {
             className="input"
             type="number"
             min="0"
+            aria-describedby="defaults-minseeders-help"
             value={form.minSeeders}
             onChange={(e) => setForm((f) => ({ ...f, minSeeders: Number(e.target.value) }))}
           />
         </label>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+        <div className="muted" id="defaults-minseeders-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           Applies to Relay's availability checks and tier decisions only — Sonarr's own
           RSS/automatic grabs don't see it. Set "Minimum Seeders" on your indexers in
           Sonarr/Prowlarr as the enforcement backstop.
@@ -290,13 +294,14 @@ function DefaultsEditor({ toast, qc }) {
             className="input"
             type="number"
             min="0"
+            aria-describedby="defaults-seederrelax-help"
             value={form.seederRelaxAfterDays}
             onChange={(e) =>
               setForm((f) => ({ ...f, seederRelaxAfterDays: Number(e.target.value) }))
             }
           />
         </label>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+        <div className="muted" id="defaults-seederrelax-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           Old back-catalogue legitimately tops out at a handful of seeders, so the
           floor above gives way once an episode has waited this long. 0 never relaxes.
         </div>

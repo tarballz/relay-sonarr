@@ -53,6 +53,7 @@ export default function SearchAdd() {
         <input
           className="input"
           placeholder="Search for a TV show…"
+          aria-label="Search for a TV show"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           autoFocus

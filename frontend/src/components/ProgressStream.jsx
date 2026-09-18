@@ -44,7 +44,7 @@ function ReasonBreakdown({ availability }) {
 export default function ProgressStream({ steps }) {
   const rows = toRows(steps);
   return (
-    <div className="progress-stream">
+    <div className="progress-stream" role="status" aria-live="polite">
       <AnimatePresence initial={false}>
         {rows.map((s) => {
           const running = s.status === "running";
