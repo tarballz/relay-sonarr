@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import { Spinner, Empty, ErrorState } from "../components/Shared.jsx";
-import { useToast } from "../components/ui/Toast.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
 
 const PHASE_LABEL = {
@@ -91,7 +90,6 @@ export default function Operations() {
   const [open, setOpen] = useState({});
   const [resolving, setResolving] = useState(null);
   const [source, setSource] = useState("all"); // all | reconciler | user
-  const toast = useToast();
 
   const ops = (data || []).filter(
     (op) => source === "all" || (op.source || "user") === source
@@ -119,7 +117,7 @@ export default function Operations() {
 
       <ReconcilerHealth />
 
-      {isLoading && <div style={{ padding: 24 }}><Spinner /></div>}
+      {isLoading && <div className="pad-lg"><Spinner /></div>}
       {isError && <ErrorState what="operations" error={error} onRetry={refetch} />}
       {data && ops.length === 0 && (
         <Empty big="No operations yet">Add a show or let the reconciler run — the play-by-play shows up here.</Empty>

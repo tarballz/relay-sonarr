@@ -262,8 +262,8 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
             )}
           </>
         ) : loading ? (
-          <div style={{ padding: "8px 0" }}>
-            <Spinner /> <span style={{ color: "var(--ink-dim)", marginLeft: 8 }}>Loading profiles…</span>
+          <div className="note-inset">
+            <Spinner /> <span style={{ marginLeft: 8 }}>Loading profiles…</span>
           </div>
         ) : (
           <>

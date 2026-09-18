@@ -24,6 +24,45 @@
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.8);
+
+  /* Spacing scale — every gap/padding in the app comes from here. */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
+
+  /* Type scale */
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 18px; --fs-xl: 24px;
+
+  /* Status semantics (distinct from tier identity) */
+  --st-ok: var(--ok);
+  --st-warn: var(--t-4k);
+  --st-err: var(--danger);
+  --st-info: var(--t-1080);
+  --st-muted: var(--ink-faint);
+
+  /* Per-episode states — consumed by the Series detail grid in a later phase */
+  --ep-imported: var(--ok);
+  --ep-wanted: var(--ink-dim);
+  --ep-searching: var(--t-1080);
+  --ep-grabbed: var(--t-1080-dim);
+  --ep-failed: var(--danger);
+  --ep-unavailable: var(--t-4k);
+  --ep-unmonitored: var(--ink-faint);
+
+  /* One dark overlay instead of three near-identical rgba() literals */
+  --overlay: rgba(8, 9, 12, 0.9);
+  --scrim: rgba(6, 7, 10, 0.66);
+
+  /* Accent alphas, so rgba(45,212,191,…) stops being retyped */
+  --t-1080-a08: rgba(45, 212, 191, 0.08);
+  --t-1080-a16: rgba(45, 212, 191, 0.16);
+  --t-4k-a08: rgba(245, 166, 35, 0.08);
+  --t-4k-a16: rgba(245, 166, 35, 0.16);
+  --danger-a10: rgba(239, 91, 110, 0.1);
+  --danger-a20: rgba(239, 91, 110, 0.2);
+  --danger-line: #6e2230;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--t-1080);
+  --z-scrim: 50; --z-dialog: 51; --z-toast: 80; --z-grain: 999;
 }
 
 * {
@@ -47,9 +86,10 @@ body {
   /* atmosphere: a faint dual-tier gradient mesh + grain instead of flat black */
   background-image: radial-gradient(
       900px 600px at 12% -10%,
-      rgba(45, 212, 191, 0.08),
+      var(--t-1080-a08),
       transparent 60%
     ),
+    /* 0.07 is a deliberate one-off, slightly softer than --t-4k-a08 */
     radial-gradient(800px 600px at 100% 0%, rgba(245, 166, 35, 0.07), transparent 55%);
   background-attachment: fixed;
 }
@@ -61,7 +101,7 @@ body::after {
   inset: 0;
   pointer-events: none;
   opacity: 0.035;
-  z-index: 999;
+  z-index: var(--z-grain);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -69,6 +109,12 @@ a {
   color: inherit;
   text-decoration: none;
 }
+
+/* ---- Small layout utilities, replacing one-off inline styles ------------ */
+.pad-lg { padding: var(--s-5); }
+.panel-clip { overflow: hidden; }
+.stack-row { display: flex; gap: var(--s-2); }
+.note-inset { padding: var(--s-2) 0; color: var(--ink-dim); }
 
 /* ---- App shell ----------------------------------------------------------- */
 .shell {
@@ -169,11 +215,18 @@ a {
 }
 .page-title {
   font-family: var(--font-display);
-  font-size: 34px;
   font-weight: 700;
   letter-spacing: -0.025em;
   margin: 0;
   line-height: 1;
+  /* font-size and gradient below were a later same-scope duplicate; merged in
+     (later wins, so 40px + the gradient are what actually render). */
+  font-size: 40px;
+  /* Intentional one-off: a light gradient stop, no token for it. */
+  background: linear-gradient(180deg, var(--ink), #b9c2cf);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .page-sub {
   color: var(--ink-dim);
@@ -228,6 +281,8 @@ a {
   border-radius: 6px;
   border: 1px solid transparent;
   white-space: nowrap;
+  /* merged in from a same-scope duplicate .tier rule further down */
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .tier.t1080p {
   color: var(--t-1080);
@@ -297,6 +352,7 @@ select.input {
   transition: transform 0.12s, background 0.16s, border-color 0.16s, opacity 0.16s;
 }
 .btn:hover {
+  /* Intentional one-off: a hover shade between --panel-2 and --line, no token for it. */
   background: #232834;
 }
 .btn:active {
@@ -308,7 +364,7 @@ select.input {
 }
 .btn.primary {
   background: var(--ink);
-  color: #0c0d11;
+  color: var(--bg);
   border-color: var(--ink);
 }
 .btn.primary:hover {
@@ -424,6 +480,7 @@ select.input {
 .progress > span {
   display: block;
   height: 100%;
+  /* Intentional one-off: a lighter teal gradient stop, no token for it. */
   background: linear-gradient(90deg, var(--t-1080), #58e0cf);
   border-radius: 999px;
 }
@@ -439,11 +496,11 @@ body:has(.scrim) {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(6, 7, 10, 0.66);
+  background: var(--scrim);
   backdrop-filter: blur(5px);
   display: grid;
   place-items: center;
-  z-index: 50;
+  z-index: var(--z-scrim);
   padding: 20px;
 }
 .dialog {
@@ -455,19 +512,16 @@ body:has(.scrim) {
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+/* Merged from three same-scope .dialog-head rules: the base padding/border,
+   Task 6's header-row flex layout, and Task 7's fanart-backdrop positioning. */
 .dialog-head {
   padding: 22px 24px 16px;
   border-bottom: 1px solid var(--line);
-}
-/* Task 6: the shared Dialog skeleton adds a header close button next to the
-   title/subtitle, so .dialog-head is now a row. There are three .dialog-head
-   rule blocks in this file (this one, the one above, and the fanart-backdrop
-   one further down at ~line 915) — fold all three into one once Task 9's
-   token pass touches this file. */
-.dialog-head {
   display: flex;
   align-items: flex-start;
   gap: 12px;
+  position: relative;
+  overflow: hidden;
 }
 .dialog-head-text {
   flex: 1;
@@ -537,7 +591,7 @@ body:has(.scrim) {
   display: grid;
   place-items: center;
   font-size: 12px;
-  color: #0c0d11;
+  color: var(--bg);
 }
 .tier-toggle.on.t1080p .check {
   background: var(--t-1080);
@@ -564,37 +618,6 @@ label.field {
   gap: 6px;
   font-size: 12px;
   color: var(--ink-dim);
-}
-
-/* ---- Fallback banner — the "smart" moment ------------------------------- */
-.fallback {
-  border: 1px solid var(--t-4k-dim);
-  border-left: 3px solid var(--t-4k);
-  background: linear-gradient(90deg, rgba(245, 166, 35, 0.1), rgba(245, 166, 35, 0.02));
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.fallback .glyph {
-  font-size: 22px;
-  filter: saturate(1.2);
-}
-.fallback .copy {
-  flex: 1;
-}
-.fallback .copy strong {
-  font-weight: 600;
-}
-.fallback .copy p {
-  margin: 3px 0 0;
-  color: var(--ink-dim);
-  font-size: 13px;
-}
-.fallback .actions {
-  display: flex;
-  gap: 8px;
 }
 
 /* ---- Resolution options menu (roadblock chooser) ------------------------- */
@@ -647,6 +670,7 @@ label.field {
   transition: transform 0.12s, background 0.16s, border-color 0.16s, opacity 0.16s;
 }
 .resolution-opt:hover {
+  /* Intentional one-off: matches .btn:hover's shade, no token for it. */
   background: #232834;
 }
 .resolution-opt:active {
@@ -663,7 +687,7 @@ label.field {
   border-color: var(--t-4k-dim);
 }
 .resolution-opt.danger {
-  border-color: rgba(239, 68, 68, 0.4);
+  border-color: var(--danger-a20);
 }
 .resolution-opt-label {
   font-weight: 600;
@@ -723,12 +747,10 @@ label.field {
   position: fixed;
   right: 22px;
   bottom: 22px;
-  /* TODO(Task 9): tokenize as var(--z-toast) once the token lands. */
-  z-index: 80;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
-  /* TODO(Task 9): tokenize as var(--s-2) once the token lands. */
-  gap: 10px;
+  gap: var(--s-2);
 }
 .toast {
   position: static;
@@ -758,27 +780,25 @@ label.field {
    Live progress + visual polish (added)
    ============================================================ */
 
-/* ---- Bolder hero / typography ------------------------------------------- */
-.page-title {
-  font-size: 40px;
-  background: linear-gradient(180deg, var(--ink), #b9c2cf);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
 /* hover lift for clickable cards/rows */
 .result,
-.poster-card,
+.poster-card {
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+/* .op-card was declared again further down with its own box styling — merged
+   here (this transition, plus that rule's background/border/overflow) so
+   there's a single .op-card rule. */
 .op-card {
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 .result:hover {
   transform: translateY(-2px);
+  /* Intentional one-off: a hover border between --line and --ink-faint, no token for it. */
   border-color: #313947;
-}
-.tier {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .tier:hover {
   transform: translateY(-1px);
@@ -872,7 +892,7 @@ label.field {
   padding: 4px 7px;
   border-radius: 6px;
   white-space: nowrap;
-  background: rgba(8, 9, 12, 0.9);
+  background: var(--overlay);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
@@ -888,6 +908,8 @@ label.field {
 .poster-gradient {
   position: absolute;
   inset: 0;
+  /* Intentional one-off: a gradient fade needs more opacity than the flat
+     --overlay chips to keep title text legible over any poster art. */
   background: linear-gradient(180deg, transparent 45%, rgba(8, 9, 12, 0.92));
 }
 .poster-info {
@@ -914,10 +936,6 @@ label.field {
 }
 
 /* ---- Dialog fanart backdrop --------------------------------------------- */
-.dialog-head {
-  position: relative;
-  overflow: hidden;
-}
 .dialog-backdrop {
   position: absolute;
   inset: -20% -10% auto;
@@ -986,7 +1004,7 @@ label.field {
 }
 .pstep.grab .check-mark,
 .pstep.placed .check-mark {
-  background: rgba(45, 212, 191, 0.16);
+  background: var(--t-1080-a16);
   color: var(--t-1080);
   border-color: var(--t-1080-dim);
 }
@@ -1043,12 +1061,6 @@ label.field {
   flex-direction: column;
   gap: 10px;
 }
-.op-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
 .op-row {
   display: flex;
   align-items: center;
@@ -1083,7 +1095,7 @@ label.field {
 }
 .op-badge.ok { color: var(--t-1080); border-color: var(--t-1080-dim); background: rgba(45, 212, 191, 0.1); }
 .op-badge.warn { color: var(--t-4k); border-color: var(--t-4k-dim); background: rgba(245, 166, 35, 0.1); }
-.op-badge.err { color: var(--danger); border-color: #6e2230; background: rgba(239, 91, 110, 0.1); }
+.op-badge.err { color: var(--danger); border-color: var(--danger-line); background: rgba(239, 91, 110, 0.1); }
 .op-badge.run { color: var(--ink-dim); }
 .op-title {
   font-family: var(--font-display);
@@ -1119,7 +1131,7 @@ label.field {
 
 /* ---- Delete affordances + confirm (added) ------------------------------- */
 .btn.danger {
-  border-color: #6e2230;
+  border-color: var(--danger-line);
   color: var(--danger);
   background: rgba(239, 91, 110, 0.1);
 }
@@ -1151,7 +1163,7 @@ label.field {
   height: 26px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(8, 9, 12, 0.88);
+  background: var(--overlay); /* was 0.88 — consolidated with the 0.9 overlay literal */
   color: var(--ink);
   cursor: pointer;
   font-size: 12px;
@@ -1166,7 +1178,7 @@ label.field {
 .poster-del:hover {
   background: rgba(239, 91, 110, 0.2);
   color: var(--danger);
-  border-color: #6e2230;
+  border-color: var(--danger-line);
 }
 .poster-del:active {
   transform: scale(0.92);
@@ -1181,7 +1193,7 @@ label.field {
   height: 26px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(8, 9, 12, 0.88);
+  background: var(--overlay); /* was 0.88 — consolidated with the 0.9 overlay literal */
   color: var(--ink);
   cursor: pointer;
   font-size: 13px;
@@ -1217,12 +1229,12 @@ label.field {
   border: 1px solid var(--line);
   color: var(--ink-dim);
 }
-.status-badge.st-on-target { color: var(--ok); border-color: rgba(74, 222, 128, 0.35); background: rgba(74, 222, 128, 0.1); }
+.status-badge.st-on-target { color: var(--st-ok); border-color: rgba(78, 201, 154, 0.35); background: rgba(78, 201, 154, 0.1); }
 .status-badge.st-split,
 .status-badge.st-reconciling { color: var(--t-1080); border-color: var(--t-1080-dim); background: rgba(45, 212, 191, 0.1); }
 .status-badge.st-waiting,
 .status-badge.st-retrying { color: var(--t-4k); border-color: var(--t-4k-dim); background: rgba(245, 166, 35, 0.1); }
-.status-badge.st-stuck { color: var(--danger); border-color: #6e2230; background: rgba(239, 91, 110, 0.1); }
+.status-badge.st-stuck { color: var(--danger); border-color: var(--danger-line); background: rgba(239, 91, 110, 0.1); }
 .status-badge.paused { color: var(--ink-faint); }
 
 /* Policy editor fallback-step row */
@@ -1247,7 +1259,7 @@ label.field {
   height: 26px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(8, 9, 12, 0.88);
+  background: var(--overlay); /* was 0.88 — consolidated with the 0.9 overlay literal */
   color: var(--ink);
   cursor: pointer;
   font-size: 14px;
@@ -1300,12 +1312,12 @@ label.field {
 .row-del:hover {
   color: var(--danger);
   background: rgba(239, 91, 110, 0.1);
-  border-color: #6e2230;
+  border-color: var(--danger-line);
 }
 
 /* exhausted (no candidate) panel — reuse .fallback, recolor to danger */
 .exhausted-panel {
-  border-color: #6e2230;
+  border-color: var(--danger-line);
   border-left-color: var(--danger);
   background: linear-gradient(90deg, rgba(239, 91, 110, 0.1), rgba(239, 91, 110, 0.02));
 }
@@ -1320,7 +1332,7 @@ label.field {
   height: 26px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(8, 9, 12, 0.88);
+  background: var(--overlay); /* was 0.88 — consolidated with the 0.9 overlay literal */
   color: var(--ink);
   cursor: pointer;
   font-size: 13px;
@@ -1496,6 +1508,51 @@ label.field {
 }
 
 /* ============================================================
+   Accessibility: focus visibility + reduced motion
+   ============================================================ */
+
+/* Keyboard focus was invisible everywhere: only .input:focus existed. */
+.btn:focus-visible,
+.nav a:focus-visible,
+.seg:focus-visible,
+.op-summary:focus-visible,
+.view-toggle button:focus-visible,
+.dialog-close:focus-visible,
+.topbar-burger:focus-visible,
+.poster-policy:focus-visible,
+.poster-seasons:focus-visible,
+.poster-resolve:focus-visible,
+.poster-del:focus-visible,
+.row-resolve:focus-visible,
+.row-del:focus-visible,
+.skip-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Hover-only poster buttons must also appear for keyboard users. */
+.poster-card:focus-within .poster-policy,
+.poster-card:focus-within .poster-seasons,
+.poster-card:focus-within .poster-resolve,
+.poster-card:focus-within .poster-del {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  body::before,
+  body::after {
+    display: none; /* gradient mesh + grain */
+  }
+}
+
+/* ============================================================
    Responsive / mobile layer
    ------------------------------------------------------------
    Everything above is the desktop design, untouched. Below:
@@ -1529,7 +1586,7 @@ label.field {
     top: 0;
     z-index: 40;
     padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
-    background: rgba(12, 13, 17, 0.82);
+    background: var(--overlay); /* was rgba(12, 13, 17, 0.82) — consolidated */
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--line);
   }
@@ -1601,7 +1658,8 @@ label.field {
     position: fixed;
     inset: 0;
     z-index: 55;
-    background: rgba(6, 7, 10, 0.6);
+    /* Consolidated with .scrim's near-identical literal — alpha 0.6 → 0.66. */
+    background: var(--scrim);
     backdrop-filter: blur(2px);
     opacity: 0;
     pointer-events: none;
@@ -1763,10 +1821,6 @@ label.field {
   }
   .tier-toggle .opts .input {
     flex: 1;
-  }
-  .fallback,
-  .fallback .actions {
-    flex-wrap: wrap;
   }
   .op-summary {
     flex-wrap: wrap;

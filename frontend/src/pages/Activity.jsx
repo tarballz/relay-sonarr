@@ -24,7 +24,7 @@ export default function Activity() {
       {data && data.length === 0 && <Empty big="Queue is empty">Nothing downloading right now.</Empty>}
 
       {data && data.length > 0 && (
-        <div className="panel" style={{ overflow: "hidden" }}>
+        <div className="panel panel-clip">
           <table className="table">
             <thead>
               <tr>

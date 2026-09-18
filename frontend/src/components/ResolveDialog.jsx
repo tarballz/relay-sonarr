@@ -138,7 +138,7 @@ export default function ResolveDialog({
           <ResolutionOptions data={roadblock} series={series} onDispatch={dispatchOption} />
         )}
         {!inFlight && !roadblock && (
-          <div style={{ padding: "8px 0", color: "var(--ink-dim)" }}>Checking availability…</div>
+          <div className="note-inset">Checking availability…</div>
         )}
       </Dialog>
       {confirmRemove && (

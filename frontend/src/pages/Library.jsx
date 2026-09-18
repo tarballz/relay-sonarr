@@ -120,7 +120,7 @@ export default function Library() {
         </div>
       </div>
 
-      {isLoading && <div style={{ padding: 24 }}><Spinner /></div>}
+      {isLoading && <div className="pad-lg"><Spinner /></div>}
       {isError && <ErrorState what="your library" error={error} onRetry={refetch} />}
       {data && data.length === 0 && <Empty big="Library is empty">Add a show from Search & Add.</Empty>}
       {data && data.length > 0 && rows.length === 0 && <Empty big='No matches'>Nothing matches &quot;{view.q}&quot;{view.tier !== 'all' ? ' in this tier' : ''}.</Empty>}
@@ -203,7 +203,7 @@ export default function Library() {
       )}
 
       {rows.length > 0 && view.view === "table" && (
-        <div className="panel" style={{ overflow: "hidden" }}>
+        <div className="panel panel-clip">
           <table className="table">
             <thead>
               <tr>

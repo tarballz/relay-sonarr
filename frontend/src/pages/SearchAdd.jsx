@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import { TierBadge, Spinner, Empty, ErrorState } from "../components/Shared.jsx";
-import { useToast } from "../components/ui/Toast.jsx";
 import AddDialog from "../components/AddDialog.jsx";
 
 function HealthPills() {
@@ -25,7 +24,6 @@ export default function SearchAdd() {
   const [term, setTerm] = useState("");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(null);
-  const toast = useToast();
 
   const { data: instances } = useQuery({ queryKey: ["instances"], queryFn: api.instances });
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -62,7 +60,7 @@ export default function SearchAdd() {
         <button className="btn primary" type="submit">Search</button>
       </form>
 
-      {results.isFetching && <div style={{ padding: 24 }}><Spinner /></div>}
+      {results.isFetching && <div className="pad-lg"><Spinner /></div>}
       {results.isError && <ErrorState what="search results" error={results.error} onRetry={results.refetch} />}
 
       {results.data && results.data.length > 0 && (

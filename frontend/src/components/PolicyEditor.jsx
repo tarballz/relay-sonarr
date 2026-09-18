@@ -114,7 +114,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
         // a flex row justified to the end, so this inner row opts back into
         // space-between across its own full width.
         <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="stack-row">
             <button className="btn ghost" onClick={togglePause} disabled={busy || !policy}>
               {paused ? "Resume" : "Pause"}
             </button>
@@ -122,7 +122,7 @@ export default function PolicyEditor({ series, instances, onClose }) {
               Reconcile now
             </button>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="stack-row">
             <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
             <button className="btn primary" onClick={save} disabled={busy || !policy}>
               {busy ? <Spinner /> : "Save"}

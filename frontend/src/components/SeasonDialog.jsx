@@ -127,7 +127,7 @@ export default function SeasonDialog({ series, onClose }) {
       {inFlight && <ProgressStream steps={flow.steps} />}
 
       {!inFlight && loading && (
-        <div style={{ padding: "8px 0", color: "var(--ink-dim)" }}>
+        <div className="note-inset">
           <Spinner /> <span style={{ marginLeft: 8 }}>Loading season status…</span>
         </div>
       )}
@@ -135,7 +135,7 @@ export default function SeasonDialog({ series, onClose }) {
       {!inFlight && !loading && (
         <>
           {seasons.length === 0 && (
-            <div style={{ color: "var(--ink-dim)", padding: "8px 0" }}>
+            <div className="note-inset">
               No placement data yet — check lower tiers to probe availability.
             </div>
           )}
