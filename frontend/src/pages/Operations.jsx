@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import { Spinner, Empty, ErrorState } from "../components/Shared.jsx";
 import ResolveDialog from "../components/ResolveDialog.jsx";
+import { ago, when } from "../lib/format.js";
 
 const PHASE_LABEL = {
   add: "Add", refresh: "Episodes", search: "Search", grab: "Download",
@@ -33,21 +34,6 @@ function outcome(op) {
 function actionable(op) {
   const s = op.result?.status;
   return !!op.finishedAt && (s === "fallback_suggested" || s === "exhausted");
-}
-
-function when(iso) {
-  if (!iso) return "";
-  // Show local HH:MM:SS — the timeline detail matters more than the date here.
-  const d = new Date(iso);
-  return d.toLocaleTimeString();
-}
-
-function ago(seconds) {
-  if (seconds == null) return "never";
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
 }
 
 // Health-at-a-glance card for the autonomous loop. Green when healthy, amber on
