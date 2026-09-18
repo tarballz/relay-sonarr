@@ -15,11 +15,15 @@ Unified search/add, combined queue & library, and a **smart-add fallback chain**
 cd backend && CONFIG_PATH=../config.yaml uv run uvicorn app.main:app --reload
 
 # Frontend dev (terminal 2) — Vite proxies /api -> :8000
-cd frontend && npm install && npm run dev
+cd frontend && npm ci && npm run dev
 
 # Tests (respx-mocked, no live Sonarr needed)
 cd backend && uv run pytest
 cd backend && uv run pytest tests/test_chain.py::test_smart_add_emits_fallback_event_when_no_release   # single test
+
+# Frontend tests (vitest, 71 tests) — the Docker image build (below) runs this and
+# fails the build on a red suite, so keep it green before shipping
+cd frontend && npm test
 
 # Full prod build/run (multi-stage: builds SPA, serves it from app/static)
 docker compose up -d --build
@@ -160,7 +164,11 @@ default 30 min).
 React + Vite + TanStack Query + react-router. `src/api.js` is the single same-origin `/api`
 wrapper; `src/lib/stream.js`'s `openStream` drives the SSE endpoints (closes on first terminal
 event to defeat EventSource auto-reconnect). `tierClass()` maps instance id → color (teal=1080p,
-amber=4k) by substring match. Pages in `src/pages/`, dialogs/shared in `src/components/`.
+amber=4k); substring sniffing is now only the fallback behind `lib/tiers.js` + `TierProvider`,
+used once the registry hasn't loaded an instance yet. Pages in `src/pages/`, dialogs/shared in
+`src/components/`. `src/lib/` holds pure, tested helpers (format, http, stream, flow, toast,
+tiers, url, urlState); `src/components/ui/` holds the shared dialog/toast/tier primitives
+(Dialog, Toast, TierProvider, useStreamFlow).
 
 ## Auth
 
