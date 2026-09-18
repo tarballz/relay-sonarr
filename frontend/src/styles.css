@@ -48,7 +48,11 @@
   --ep-unavailable: var(--t-4k);
   --ep-unmonitored: var(--ink-faint);
 
-  /* One dark overlay instead of three near-identical rgba() literals */
+  /* One dark overlay instead of three near-identical rgba() literals.
+     Replaced rgba(8,9,12,0.9) [poster-tier, exact], rgba(8,9,12,0.88)
+     [poster-del/policy/resolve/seasons] and rgba(12,13,17,0.82) [topbar] —
+     the 0.88→0.9 and 0.82→0.9 alpha/hue drift is sub-perceptual on this dark
+     ground and was reviewed and accepted as the intended consolidation. */
   --overlay: rgba(8, 9, 12, 0.9);
   --scrim: rgba(6, 7, 10, 0.66);
 
@@ -687,7 +691,10 @@ label.field {
   border-color: var(--t-4k-dim);
 }
 .resolution-opt.danger {
-  border-color: var(--danger-a20);
+  /* Intentional one-off: deliberately doesn't match --danger/--danger-a20 —
+     a redder, more opaque border than the rest of the danger family. Don't
+     "tidy" this into a token; it was reviewed and kept as-is. */
+  border-color: rgba(239, 68, 68, 0.4);
 }
 .resolution-opt-label {
   font-weight: 600;
@@ -1658,8 +1665,9 @@ label.field {
     position: fixed;
     inset: 0;
     z-index: 55;
-    /* Consolidated with .scrim's near-identical literal — alpha 0.6 → 0.66. */
-    background: var(--scrim);
+    /* Intentional one-off: a touch lighter than --scrim (0.6 vs 0.66) — the
+       drawer dimmer reads correctly against the sidebar's own background. */
+    background: rgba(6, 7, 10, 0.6);
     backdrop-filter: blur(2px);
     opacity: 0;
     pointer-events: none;
