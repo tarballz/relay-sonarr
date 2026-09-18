@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, streamAdvance, streamReattempt, streamFillGaps } from "../api.js";
 import { useToast } from "./ui/Toast.jsx";
@@ -28,7 +28,6 @@ export default function ResolveDialog({
   const [confirmRemove, setConfirmRemove] = useState(null);
   const [busy, setBusy] = useState(false);
   const qc = useQueryClient();
-  const started = useRef(false);
   // Renamed from the stream flow's `busy` to avoid colliding with the
   // remove-confirm `busy` state above.
   const { flow, run, busy: streaming, canShowFooter } = useStreamFlow();
@@ -67,9 +66,11 @@ export default function ResolveDialog({
   }
 
   // Library entry: re-search the existing series in place as soon as we open.
+  // No started-ref latch: useStreamFlow's unmount cleanup cancels any in-flight
+  // stream, so a StrictMode mount -> effect -> cleanup -> re-run cycle just
+  // cancels and restarts the same request — never two streams open at once.
   useEffect(() => {
-    if (autoReattempt && !started.current) {
-      started.current = true;
+    if (autoReattempt) {
       runStream(streamReattempt, {
         tvdbId: series.tvdbId,
         instanceId: series.instanceId,
@@ -133,7 +134,12 @@ export default function ResolveDialog({
           ) : null
         }
       >
-        {inFlight && <ProgressStream steps={flow.steps} />}
+        {inFlight && (
+          <>
+            {flow.error && <div className="note-inset" role="alert">{flow.error}</div>}
+            <ProgressStream steps={flow.steps} />
+          </>
+        )}
         {roadblock && (
           <ResolutionOptions data={roadblock} series={series} onDispatch={dispatchOption} />
         )}
