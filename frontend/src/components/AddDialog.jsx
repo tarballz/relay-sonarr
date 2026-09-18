@@ -238,22 +238,27 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
           </>
         }
         footer={
-          canShowFooter && !loading ? (
-            <>
-              <button className="btn ghost" onClick={onClose}>Cancel</button>
-              <button
-                className="btn primary"
-                disabled={busy || chosen.length === 0 || seasonChoiceInvalid}
-                onClick={handleAdd}
-              >
-                {busy ? <Spinner /> : `Add${chosen.length ? ` to ${chosen.length} tier${chosen.length > 1 ? "s" : ""}` : ""}`}
-              </button>
-            </>
-          ) : null
+          flow.phase === "idle" ? (
+            canShowFooter && !loading ? (
+              <>
+                <button className="btn ghost" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn primary"
+                  disabled={busy || chosen.length === 0 || seasonChoiceInvalid}
+                  onClick={handleAdd}
+                >
+                  {busy ? <Spinner /> : `Add${chosen.length ? ` to ${chosen.length} tier${chosen.length > 1 ? "s" : ""}` : ""}`}
+                </button>
+              </>
+            ) : null
+          ) : (
+            <button className="btn" onClick={onClose}>Close</button>
+          )
         }
       >
         {inFlight ? (
           <>
+            {flow.error && <div className="note-inset" role="alert">{flow.error}</div>}
             <ProgressStream steps={flow.steps} />
             {roadblock && (
               <ResolutionOptions

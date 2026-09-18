@@ -112,19 +112,28 @@ export default function SeasonDialog({ series, onClose }) {
         </>
       }
       footer={
-        canShowFooter && !loading ? (
-          <>
-            <button className="btn ghost" onClick={onClose}>
-              Close
-            </button>
-            <button className="btn" disabled={checking} onClick={checkLowerTiers}>
-              {checking ? <Spinner /> : "Check lower tiers"}
-            </button>
-          </>
-        ) : null
+        flow.phase === "idle" ? (
+          canShowFooter && !loading ? (
+            <>
+              <button className="btn ghost" onClick={onClose}>
+                Close
+              </button>
+              <button className="btn" disabled={checking} onClick={checkLowerTiers}>
+                {checking ? <Spinner /> : "Check lower tiers"}
+              </button>
+            </>
+          ) : null
+        ) : (
+          <button className="btn" onClick={onClose}>Close</button>
+        )
       }
     >
-      {inFlight && <ProgressStream steps={flow.steps} />}
+      {inFlight && (
+        <>
+          {flow.error && <div className="note-inset" role="alert">{flow.error}</div>}
+          <ProgressStream steps={flow.steps} />
+        </>
+      )}
 
       {!inFlight && loading && (
         <div className="note-inset">
