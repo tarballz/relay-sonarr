@@ -25,19 +25,12 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.8);
 
-  /* Spacing scale — every gap/padding in the app comes from here. */
-  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
-  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
-
-  /* Type scale */
-  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 18px; --fs-xl: 24px;
+  /* Spacing scale — the scale new rules should draw values from, not a claim
+     that every existing gap/padding already does. */
+  --s-2: 8px; --s-3: 12px; --s-5: 24px;
 
   /* Status semantics (distinct from tier identity) */
   --st-ok: var(--ok);
-  --st-warn: var(--t-4k);
-  --st-err: var(--danger);
-  --st-info: var(--t-1080);
-  --st-muted: var(--ink-faint);
 
   /* Per-episode states — consumed by the Series detail grid in a later phase */
   --ep-imported: var(--ok);
@@ -56,17 +49,26 @@
   --overlay: rgba(8, 9, 12, 0.9);
   --scrim: rgba(6, 7, 10, 0.66);
 
-  /* Accent alphas, so rgba(45,212,191,…) stops being retyped */
+  /* Accent alphas — one token per alpha value actually used against each tier
+     hue, so rgba(45,212,191,…) / rgba(245,166,35,…) / rgba(239,91,110,…) stop
+     being retyped. */
+  --t-1080-a07: rgba(45, 212, 191, 0.07);
   --t-1080-a08: rgba(45, 212, 191, 0.08);
+  --t-1080-a10: rgba(45, 212, 191, 0.1);
+  --t-1080-a12: rgba(45, 212, 191, 0.12);
   --t-1080-a16: rgba(45, 212, 191, 0.16);
-  --t-4k-a08: rgba(245, 166, 35, 0.08);
-  --t-4k-a16: rgba(245, 166, 35, 0.16);
+  --t-1080-a20: rgba(45, 212, 191, 0.2);
+  --t-4k-a07: rgba(245, 166, 35, 0.07);
+  --t-4k-a10: rgba(245, 166, 35, 0.1);
+  --t-4k-a12: rgba(245, 166, 35, 0.12);
+  --t-4k-a14: rgba(245, 166, 35, 0.14);
+  --t-4k-a20: rgba(245, 166, 35, 0.2);
   --danger-a10: rgba(239, 91, 110, 0.1);
   --danger-a20: rgba(239, 91, 110, 0.2);
   --danger-line: #6e2230;
 
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--t-1080);
-  --z-scrim: 50; --z-dialog: 51; --z-toast: 80; --z-grain: 999;
+  --z-scrim: 50; --z-toast: 80; --z-grain: 999;
 }
 
 * {
@@ -93,8 +95,9 @@ body {
       var(--t-1080-a08),
       transparent 60%
     ),
-    /* 0.07 is a deliberate one-off, slightly softer than --t-4k-a08 */
-    radial-gradient(800px 600px at 100% 0%, rgba(245, 166, 35, 0.07), transparent 55%);
+    /* --t-4k-a07 is deliberately a touch softer here than --t-1080-a08 above,
+       for hue balance */
+    radial-gradient(800px 600px at 100% 0%, var(--t-4k-a07), transparent 55%);
   background-attachment: fixed;
 }
 
@@ -290,12 +293,12 @@ a {
 }
 .tier.t1080p {
   color: var(--t-1080);
-  background: rgba(45, 212, 191, 0.1);
+  background: var(--t-1080-a10);
   border-color: var(--t-1080-dim);
 }
 .tier.t4k {
   color: var(--t-4k);
-  background: rgba(245, 166, 35, 0.1);
+  background: var(--t-4k-a10);
   border-color: var(--t-4k-dim);
 }
 .tier.tdefault {
@@ -331,7 +334,7 @@ a {
 }
 .input:focus {
   border-color: var(--t-1080-dim);
-  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  box-shadow: 0 0 0 3px var(--t-1080-a12);
 }
 select.input {
   appearance: none;
@@ -377,12 +380,12 @@ select.input {
 .btn.t1080p {
   border-color: var(--t-1080-dim);
   color: var(--t-1080);
-  background: rgba(45, 212, 191, 0.1);
+  background: var(--t-1080-a10);
 }
 .btn.t4k {
   border-color: var(--t-4k-dim);
   color: var(--t-4k);
-  background: rgba(245, 166, 35, 0.1);
+  background: var(--t-4k-a10);
 }
 .btn.ghost {
   background: transparent;
@@ -581,11 +584,11 @@ body:has(.scrim) {
 }
 .tier-toggle.on.t1080p {
   border-color: var(--t-1080-dim);
-  background: rgba(45, 212, 191, 0.07);
+  background: var(--t-1080-a07);
 }
 .tier-toggle.on.t4k {
   border-color: var(--t-4k-dim);
-  background: rgba(245, 166, 35, 0.07);
+  background: var(--t-4k-a07);
 }
 .tier-toggle .check {
   width: 20px;
@@ -636,7 +639,7 @@ label.field {
 .resolution {
   border: 1px solid var(--t-4k-dim);
   border-left: 3px solid var(--t-4k);
-  background: linear-gradient(90deg, rgba(245, 166, 35, 0.1), rgba(245, 166, 35, 0.02));
+  background: linear-gradient(90deg, var(--t-4k-a10), rgba(245, 166, 35, 0.02));
   border-radius: var(--radius);
   padding: 16px 18px;
 }
@@ -1025,7 +1028,7 @@ label.field {
 }
 .pstep.fallback .check-mark,
 .pstep.exhausted .check-mark {
-  background: rgba(245, 166, 35, 0.14);
+  background: var(--t-4k-a14);
   color: var(--t-4k);
   border-color: var(--t-4k-dim);
 }
@@ -1108,9 +1111,9 @@ label.field {
   border: 1px solid var(--line);
   white-space: nowrap;
 }
-.op-badge.ok { color: var(--t-1080); border-color: var(--t-1080-dim); background: rgba(45, 212, 191, 0.1); }
-.op-badge.warn { color: var(--t-4k); border-color: var(--t-4k-dim); background: rgba(245, 166, 35, 0.1); }
-.op-badge.err { color: var(--danger); border-color: var(--danger-line); background: rgba(239, 91, 110, 0.1); }
+.op-badge.ok { color: var(--t-1080); border-color: var(--t-1080-dim); background: var(--t-1080-a10); }
+.op-badge.warn { color: var(--t-4k); border-color: var(--t-4k-dim); background: var(--t-4k-a10); }
+.op-badge.err { color: var(--danger); border-color: var(--danger-line); background: var(--danger-a10); }
 .op-badge.run { color: var(--ink-dim); }
 .op-title {
   font-family: var(--font-display);
@@ -1148,7 +1151,7 @@ label.field {
 .btn.danger {
   border-color: var(--danger-line);
   color: var(--danger);
-  background: rgba(239, 91, 110, 0.1);
+  background: var(--danger-a10);
 }
 .btn.danger:hover {
   background: rgba(239, 91, 110, 0.18);
@@ -1191,7 +1194,7 @@ label.field {
   opacity: 1;
 }
 .poster-del:hover {
-  background: rgba(239, 91, 110, 0.2);
+  background: var(--danger-a20);
   color: var(--danger);
   border-color: var(--danger-line);
 }
@@ -1221,7 +1224,7 @@ label.field {
   opacity: 1;
 }
 .poster-policy:hover {
-  background: rgba(45, 212, 191, 0.2);
+  background: var(--t-1080-a20);
   color: var(--t-1080);
   border-color: var(--t-1080-dim);
 }
@@ -1246,10 +1249,10 @@ label.field {
 }
 .status-badge.st-on-target { color: var(--st-ok); border-color: rgba(78, 201, 154, 0.35); background: rgba(78, 201, 154, 0.1); }
 .status-badge.st-split,
-.status-badge.st-reconciling { color: var(--t-1080); border-color: var(--t-1080-dim); background: rgba(45, 212, 191, 0.1); }
+.status-badge.st-reconciling { color: var(--t-1080); border-color: var(--t-1080-dim); background: var(--t-1080-a10); }
 .status-badge.st-waiting,
-.status-badge.st-retrying { color: var(--t-4k); border-color: var(--t-4k-dim); background: rgba(245, 166, 35, 0.1); }
-.status-badge.st-stuck { color: var(--danger); border-color: var(--danger-line); background: rgba(239, 91, 110, 0.1); }
+.status-badge.st-retrying { color: var(--t-4k); border-color: var(--t-4k-dim); background: var(--t-4k-a10); }
+.status-badge.st-stuck { color: var(--danger); border-color: var(--danger-line); background: var(--danger-a10); }
 .status-badge.paused { color: var(--ink-faint); }
 
 /* Policy editor fallback-step row */
@@ -1287,7 +1290,7 @@ label.field {
   opacity: 1;
 }
 .poster-resolve:hover {
-  background: rgba(245, 166, 35, 0.2);
+  background: var(--t-4k-a20);
   color: var(--t-4k);
   border-color: var(--t-4k-dim);
 }
@@ -1309,7 +1312,7 @@ label.field {
   transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
 .row-resolve:hover {
-  background: rgba(245, 166, 35, 0.12);
+  background: var(--t-4k-a12);
   border-color: var(--t-4k-dim);
 }
 
@@ -1326,7 +1329,7 @@ label.field {
 }
 .row-del:hover {
   color: var(--danger);
-  background: rgba(239, 91, 110, 0.1);
+  background: var(--danger-a10);
   border-color: var(--danger-line);
 }
 
@@ -1334,7 +1337,7 @@ label.field {
 .exhausted-panel {
   border-color: var(--danger-line);
   border-left-color: var(--danger);
-  background: linear-gradient(90deg, rgba(239, 91, 110, 0.1), rgba(239, 91, 110, 0.02));
+  background: linear-gradient(90deg, var(--danger-a10), rgba(239, 91, 110, 0.02));
 }
 
 /* Seasons button on a poster card (left rail, after resolve + policy) */
@@ -1360,7 +1363,7 @@ label.field {
   opacity: 1;
 }
 .poster-seasons:hover {
-  background: rgba(45, 212, 191, 0.2);
+  background: var(--t-1080-a20);
   color: var(--t-1080);
   border-color: var(--t-1080-dim);
 }
@@ -1385,7 +1388,7 @@ label.field {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .monitor-choice .seg.on {
-  background: rgba(45, 212, 191, 0.12);
+  background: var(--t-1080-a12);
   border-color: var(--t-1080-dim);
   color: var(--t-1080);
 }
@@ -1412,7 +1415,7 @@ label.field {
   user-select: none;
 }
 .season-chip.on {
-  background: rgba(45, 212, 191, 0.12);
+  background: var(--t-1080-a12);
   border-color: var(--t-1080-dim);
   color: var(--t-1080);
 }
