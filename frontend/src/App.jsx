@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
@@ -27,10 +27,14 @@ const SIDEBAR_ID = "sidebar-nav";
 // dialog pattern (`useDialog`). Mounted only while the drawer is open, since
 // `useDialog`'s effect runs once per mount — the drawer's own DOM node (held
 // in `panelRef`, always mounted for its CSS slide transition) is attached to
-// the hook's ref during render, before that effect fires.
+// the hook's ref via a layout effect, which still fires ahead of useDialog's
+// own passive effect, but through the supported effect mechanism rather than
+// a ref write during render.
 function DrawerFocusTrap({ onClose, panelRef }) {
   const dialogRef = useDialog(onClose);
-  dialogRef.current = panelRef.current;
+  useLayoutEffect(() => {
+    dialogRef.current = panelRef.current;
+  });
   return null;
 }
 

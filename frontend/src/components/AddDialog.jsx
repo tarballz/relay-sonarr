@@ -10,6 +10,7 @@ import {
 } from "../api.js";
 import { TierBadge, Spinner } from "./Shared.jsx";
 import { useToast } from "./ui/Toast.jsx";
+import { useTiers } from "./ui/TierProvider.jsx";
 import Dialog from "./ui/Dialog.jsx";
 import { useStreamFlow } from "./ui/useStreamFlow.js";
 import ProgressStream from "./ProgressStream.jsx";
@@ -28,6 +29,7 @@ function fanartUrl(series) {
 // resolution menu ("no release found — here's how to resolve it").
 export default function AddDialog({ series, instances, fallbackChains, onClose }) {
   const toast = useToast();
+  const { label } = useTiers();
   const [opts, setOpts] = useState({}); // id -> {profiles, rootFolders, profileId, rootFolderPath}
   const [sel, setSel] = useState({}); // id -> bool
   const [busy, setBusy] = useState(false);
@@ -309,6 +311,7 @@ export default function AddDialog({ series, instances, fallbackChains, onClose }
                   <input
                     type="checkbox"
                     className="tier-toggle-input"
+                    aria-label={label(i.id, i.name)}
                     checked={on}
                     onChange={() => toggle(i.id)}
                   />
