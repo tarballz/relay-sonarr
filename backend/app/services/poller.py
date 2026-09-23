@@ -458,16 +458,32 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
 
 
 # Sonarr's own import-caution markers (set when a downloaded file is an
-# executable). Complements the title-extension check in `looks_dangerous`.
-_DANGER_MARKERS = ("potentially dangerous file", "found executable file")
+# executable, or has no recognizable video extension at all). Complements the
+# title-extension check in `looks_dangerous`.
+#
+# "unsupported extension: ''" is deliberately the *blank*-extension message
+# only, not "unsupported extension" generally — a real if unwanted container
+# Sonarr declines to import (e.g. a bonus .iso) still names an extension, and
+# is a format problem, not a malware fake. Live incident: "South Park S29E01"
+# was a 1.05GB Windows PE32+ executable with no extension at all, padded to
+# look like a video; Relay has no mount onto the downloads tree to inspect
+# the bytes itself, but Sonarr's import pipeline already did, and a blank
+# extension is the one verdict from it that's unambiguous.
+_DANGER_MARKERS = (
+    "potentially dangerous file",
+    "found executable file",
+    "unsupported extension: ''",
+)
 
 
 def _is_dangerous(record: dict) -> bool:
     """Queue item whose release is an executable/malware fake.
 
-    Two signals: the release title itself ends in an executable extension
+    Three signals: the release title itself ends in an executable extension
     (``looks_dangerous``), or Sonarr's import pipeline flagged a contained file
-    ("Caution: Found potentially dangerous file…" / "Found executable file…").
+    ("Caution: Found potentially dangerous file…" / "Found executable file…"),
+    or Sonarr's import pipeline found no video extension on the file at all
+    ("Invalid video file, unsupported extension: ''").
     """
     if looks_dangerous(record):
         return True

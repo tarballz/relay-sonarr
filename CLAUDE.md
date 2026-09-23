@@ -120,6 +120,23 @@ default 30 min).
   `sweep_dangerous`, `sweep_search_stalls`), then `reconcile_series` per non-paused
   `series_intent`. Ticks are lock-serialized, so one running longer than
   `RECONCILER_INTERVAL_S` just means the loop never idles.
+- **Malware fakes** — Relay has no mount onto the downloads tree (compose only bind-mounts
+  `config.yaml` and `data/`), so `sweep_dangerous`/`_is_dangerous` (`poller.py`) can't inspect
+  file bytes itself; it acts on signals Sonarr already computed. Two independent checks: the
+  release *title* ends in an executable extension (`availability.looks_dangerous`), or Sonarr's
+  import pipeline flagged the actual downloaded file via `statusMessages` (`_DANGER_MARKERS`).
+  Live incident 2026-09-23: "South Park S29E01" was a 1.05GB Windows PE32+ executable with **no
+  file extension at all**, padded with junk bytes past typical scanner upload limits — evading
+  the title check (its filename ended in `x265 FLUX`, not `.exe`) and sitting in
+  `importPending` for 7 days before anyone noticed. Sonarr's own import pipeline already
+  refused it — `"Invalid video file, unsupported extension: ''"` — which is why it never
+  reached the library; the gap was that nothing escalated a week-old stuck import. That exact
+  message is now a `_DANGER_MARKERS` entry, matched only on the *blank*-extension form (a real
+  but unwanted container, e.g. a bonus `.iso`, still names an extension and is a format
+  problem, not evidence of malware — don't broaden the match to "unsupported extension"
+  generally). **If you ever add a downloads-tree mount**, a magic-byte check (`MZ`, `\x7fELF`,
+  `#!`) on the actual file becomes possible and would be strictly stronger than trusting
+  Sonarr's message text — but there's no such mount today.
 - **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
   metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
   = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`

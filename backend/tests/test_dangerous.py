@@ -1,8 +1,18 @@
 """Dangerous-release sweep: purge executable/malware fakes from the queue.
 
-Modeled on the live incident: fake "From S04" releases whose payload was a
-single .scr/.exe, flagged by Sonarr ("Caution: Found potentially dangerous
-file…") but left sitting in importPending for weeks with the file on disk.
+Modeled on two live incidents:
+- Fake "From S04" releases whose payload was a single .scr/.exe, flagged by
+  Sonarr ("Caution: Found potentially dangerous file…") but left sitting in
+  importPending for weeks with the file on disk.
+- A "South Park S29E01" release that was actually a 1.05GB Windows PE32+
+  executable with no file extension at all — bulk padding to look like a
+  video and to dodge the extension-based checks above. Sonarr's import
+  pipeline already does the content inspection here (it can't find a valid
+  video container) and reports "Invalid video file, unsupported extension:
+  ''"; Relay has no mount onto the downloads tree to re-verify the bytes
+  itself, so it trusts Sonarr's verdict for the one case that verdict is
+  unambiguous: a *blank* extension. It sat importPending for 7 days before
+  anyone noticed, which is the escalation gap this closes.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -60,6 +70,29 @@ def test_is_dangerous_ignores_normal_releases():
     ])) is False
 
 
+def test_is_dangerous_flags_blank_extension_message():
+    # Live incident: "South Park S29E01" was a bare PE32+ executable — no
+    # extension at all, so Sonarr's own container-sniffing import check
+    # rejects it. That message is the content-based signal Relay has no
+    # mount to reproduce itself, so it trusts it.
+    rec = _rec(title="South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX",
+               statusMessages=[{
+                   "title": "South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX",
+                   "messages": ["Invalid video file, unsupported extension: ''"],
+               }])
+    assert _is_dangerous(rec) is True
+
+
+def test_is_dangerous_ignores_nonblank_unsupported_extension():
+    # A real (if unusual) container Sonarr won't import — e.g. a bonus .iso
+    # — is a format problem, not evidence of a malware fake. Only a *blank*
+    # extension is unambiguous: no legitimate release ships with none.
+    rec = _rec(statusMessages=[{
+        "title": "x", "messages": ["Invalid video file, unsupported extension: '.iso'"],
+    }])
+    assert _is_dangerous(rec) is False
+
+
 # --- sweep --------------------------------------------------------------------
 
 @respx.mock
@@ -88,6 +121,32 @@ async def test_sweep_removes_flagged_release_and_researches(tmp_path):
     assert body["name"] == "EpisodeSearch" and body["episodeIds"] == [406]
     op = (await ops.recent())[0]
     assert op["kind"] == "dangerous-cleanup" and op["source"] == "reconciler"
+
+
+@respx.mock
+async def test_sweep_removes_blank_extension_release_and_researches(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    ops = OperationStore(db)
+    reg = make_registry()
+    records = [
+        _rec(id=41, title="South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX",
+             statusMessages=[{"title": "South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX",
+                              "messages": ["Invalid video file, unsupported extension: ''"]}],
+             episode={"id": 4123, "seasonNumber": 29, "episodeNumber": 1}),
+        _rec(id=42),  # clean — untouched
+    ]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    del_route = respx.delete(f"{A}/api/v3/queue/41").mock(return_value=httpx.Response(200))
+    cmd = respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+
+    removed = await sweep_dangerous(reg, db, ops, cap=25, now=NOW)
+
+    assert removed == 1
+    params = del_route.calls.last.request.url.params
+    assert params["removeFromClient"] == "true" and params["blocklist"] == "true"
+    body = json.loads(cmd.calls.last.request.content)
+    assert body["name"] == "EpisodeSearch" and body["episodeIds"] == [4123]
 
 
 @respx.mock
