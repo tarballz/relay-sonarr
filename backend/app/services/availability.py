@@ -8,6 +8,7 @@ non-rejected release for a representative episode.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from app.sonarr.registry import Registry
@@ -15,6 +16,10 @@ from app.sonarr.registry import Registry
 
 # Default seeder threshold for the gate; 0 disables it (legacy behavior).
 DEFAULT_MIN_SEEDERS = 5
+
+# How many episodes to sample before calling a series unavailable. One is not
+# enough — see ``_pick_sample_episodes``.
+DEFAULT_SAMPLE_LIMIT = 3
 
 # How long an episode may sit wanted before the floor gives way to
 # "best available". Old back-catalogue legitimately tops out at a handful of
@@ -117,56 +122,59 @@ def summarize_rejections(releases: list[dict]) -> list[dict]:
     ]
 
 
-def _pick_sample_episode(episodes: list[dict]) -> dict | None:
-    """Pick the episode whose availability actually matters.
+def _sample_pool(episodes: list[dict]) -> list[dict]:
+    """The episodes worth asking about, best candidates first.
 
-    Prefer one we still *need* — monitored but with no file — since that's the
+    Prefer ones we still *need* — monitored but with no file — since that's the
     real question ("can a release be had for something missing?"). For a freshly
-    added series nothing has a file yet, so this is simply the first monitored
-    episode. For an already-populated series (e.g. 4K with only part of S1 on
-    disk) it skips the episodes already grabbed and samples a genuine gap, so a
+    added series nothing has a file yet, so this is simply the monitored
+    episodes. For an already-populated series (e.g. 4K with only part of S1 on
+    disk) it skips the episodes already grabbed and samples genuine gaps, so a
     partially-available series isn't reported "available" off an episode you
     already have. Falls back to any monitored episode, then to anything.
     """
-    if not episodes:
-        return None
-    for ep in episodes:
-        if ep.get("monitored") and not ep.get("hasFile"):
-            return ep
-    for ep in episodes:
-        if ep.get("monitored"):
-            return ep
-    return episodes[0]
+    gaps = [ep for ep in episodes if ep.get("monitored") and not ep.get("hasFile")]
+    if gaps:
+        return gaps
+    monitored = [ep for ep in episodes if ep.get("monitored")]
+    return monitored or list(episodes)
 
 
-async def check_availability(
-    registry: Registry, instance_id: str, series_id: int, *,
-    min_seeders: int = 0, include_releases: bool = False,
-) -> dict:
-    """Run an interactive release search on a sample episode of the series.
+def _pick_sample_episodes(
+    episodes: list[dict], limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> list[dict]:
+    """Pick up to ``limit`` episodes to search, spread across the series.
 
-    Assumes the series already exists on the instance and its episodes have been
-    populated (the smart-add orchestration handles add + refresh first).
+    One episode's verdict is a terrible proxy for a whole series. Sonarr rejects
+    a release it can't map to the series as ``Unknown Series``, and whether that
+    happens depends on the *release title* — which varies episode by episode,
+    group by group. Live case: Jackass's sampled episode returned 7 releases,
+    all ``Unknown Series``, so the add flow declared the series empty; the
+    reconciler, which searches every episode separately, grabbed 25 of them an
+    hour later.
 
-    ``include_releases`` adds the raw release list to the payload so a caller
-    can reuse this search (e.g. for a direct grab) instead of hitting the
-    indexers again — callers must pop it before emitting the dict to the UI.
+    The picks are spread rather than consecutive because neighbouring episodes
+    come from the same release groups and share the same naming fate — three
+    neighbours are barely more informative than one.
     """
-    client = registry.get(instance_id).client
-    episodes = await client.episodes(series_id)
-    sample = _pick_sample_episode(episodes)
-    if sample is None:
-        return {
-            "instanceId": instance_id,
-            "available": False,
-            "releaseCount": 0,
-            "totalReleases": 0,
-            "seederFiltered": 0,
-            "rejectionSummary": [],
-            "sampledEpisode": None,
-        }
+    pool = _sample_pool(episodes)
+    if not pool or limit <= 0:
+        return []
+    if len(pool) <= limit or limit == 1:
+        return pool[:limit]
+    step = (len(pool) - 1) / (limit - 1)
+    return [pool[round(i * step)] for i in range(limit)]
 
-    releases = await client.releases(sample["id"])
+
+def _pick_sample_episode(episodes: list[dict]) -> dict | None:
+    """The single best episode to sample (the head of the spread)."""
+    picks = _pick_sample_episodes(episodes, limit=1)
+    return picks[0] if picks else None
+
+
+def _verdict(instance_id: str, sample: dict, releases: list[dict],
+             min_seeders: int) -> dict:
+    """Summarize one episode's interactive search."""
     qualifying = count_qualifying(releases, min_seeders)
     filtered = seeder_filtered_count(releases, min_seeders)
     rejections = summarize_rejections(releases)
@@ -176,7 +184,7 @@ async def check_availability(
         rejections.append(
             {"reason": f"fewer than {min_seeders} seeders", "count": filtered}
         )
-    result = {
+    return {
         "instanceId": instance_id,
         "available": qualifying > 0,
         "releaseCount": qualifying,
@@ -185,6 +193,68 @@ async def check_availability(
         "rejectionSummary": rejections,
         "sampledEpisode": {"id": sample["id"], "title": sample.get("title")},
     }
+
+
+async def check_availability(
+    registry: Registry, instance_id: str, series_id: int, *,
+    min_seeders: int = 0, include_releases: bool = False,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> dict:
+    """Run interactive release searches on a few sample episodes of the series.
+
+    Assumes the series already exists on the instance and its episodes have been
+    populated (the smart-add orchestration handles add + refresh first).
+
+    The first sample is searched alone: when it qualifies — the common "yes"
+    — the answer costs exactly one search, as it always did. Only a *miss* buys
+    a second opinion, because a miss is the answer this check used to get wrong
+    (see ``_pick_sample_episodes``). The remaining samples then run concurrently
+    so a false negative costs about two search timeouts, not ``sample_limit``.
+
+    ``include_releases`` adds the raw release list to the payload so a caller
+    can reuse this search (e.g. for a direct grab) instead of hitting the
+    indexers again — callers must pop it before emitting the dict to the UI.
+    It always belongs to the episode that decided the verdict.
+    """
+    client = registry.get(instance_id).client
+    episodes = await client.episodes(series_id)
+    samples = _pick_sample_episodes(episodes, sample_limit)
+    if not samples:
+        return {
+            "instanceId": instance_id,
+            "available": False,
+            "releaseCount": 0,
+            "totalReleases": 0,
+            "seederFiltered": 0,
+            "rejectionSummary": [],
+            "releasesExist": False,
+            "sampledEpisode": None,
+            "sampledEpisodes": [],
+        }
+
+    async def probe(sample: dict) -> tuple[dict, list[dict]]:
+        releases = await client.releases(sample["id"])
+        return _verdict(instance_id, sample, releases, min_seeders), releases
+
+    probed = [await probe(samples[0])]
+    if not probed[0][0]["available"] and len(samples) > 1:
+        rest = await asyncio.gather(
+            *(probe(s) for s in samples[1:]), return_exceptions=True,
+        )
+        # A probe that times out simply doesn't get a vote — one slow indexer
+        # must not fail an add that the first sample already answered.
+        probed.extend(p for p in rest if not isinstance(p, BaseException))
+
+    # The verdict comes from the first episode that qualified; failing that,
+    # from the most informative miss, so the UI explains the richest rejection
+    # set rather than whichever episode happened to be sampled first.
+    decided, releases = next(
+        ((v, r) for v, r in probed if v["available"]),
+        max(probed, key=lambda p: p[0]["totalReleases"]),
+    )
+    result = dict(decided)
+    result["releasesExist"] = any(v["totalReleases"] > 0 for v, _ in probed)
+    result["sampledEpisodes"] = [v["sampledEpisode"] for v, _ in probed]
     if include_releases:
         result["releases"] = releases
     return result

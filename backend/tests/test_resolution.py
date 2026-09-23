@@ -73,6 +73,32 @@ def test_build_options_chain_disabled_when_exhausted():
     assert by["remove"]["enabled"]
 
 
+def test_build_options_blocks_remove_when_releases_exist():
+    """Ink Master was deleted on the strength of "no downloadable release"
+    while 83 releases existed — none of them matching the sampled episode.
+    Removal stays available only when the indexers really returned nothing."""
+    by = {o["id"]: o for o in build_options(
+        tvdb_id=1, from_instance_id="1080p", from_series_id=22,
+        chain_key="1080p", next_index=2, resolved=None,
+        availability={"available": False, "releasesExist": True, "totalReleases": 83},
+    )}
+    assert not by["remove"]["enabled"]
+    assert "releases exist" in by["remove"]["disabledReason"]
+    # Leaving it monitored is the right answer: the reconciler keeps searching.
+    assert by["leave"]["enabled"]
+    assert by["leave"]["recommended"] is True
+
+
+def test_build_options_allows_remove_when_no_releases_at_all():
+    by = {o["id"]: o for o in build_options(
+        tvdb_id=1, from_instance_id="1080p", from_series_id=22,
+        chain_key="1080p", next_index=2, resolved=None,
+        availability={"available": False, "releasesExist": False, "totalReleases": 0},
+    )}
+    assert by["remove"]["enabled"]
+    assert by["leave"]["recommended"] is False
+
+
 # --- reattempt_search --------------------------------------------------------
 
 @respx.mock

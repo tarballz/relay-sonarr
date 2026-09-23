@@ -65,8 +65,25 @@ Request flow: `api/*` routers → `services/*` (orchestration) → `sonarr/clien
 
 `services/add.py`. "Added" ≠ "will download" — a series can be added to the 4K tier with no 4K
 release existing. So `smart_add` adds → `RefreshSeries` → polls episodes → runs
-`check_availability` (an *interactive release search* on a sample episode; a non-`rejected`
+`check_availability` (*interactive release searches* on sample episodes; a non-`rejected`
 release means available).
+
+**A miss is never "the series is empty."** One episode's verdict is a bad proxy for a series:
+Sonarr rejects releases it can't map to the series as `Unknown Series`, and that depends on the
+*release title*, which varies episode to episode. Live incident (2026-09-22): Jackass's single
+sampled episode returned 7 releases, all `Unknown Series`, so the add flow reported `exhausted`
+— and the reconciler grabbed 25 of its episodes an hour later; Ink Master was reported empty on
+83 releases and the user deleted it on the strength of that wording. So:
+- `check_availability` samples up to `DEFAULT_SAMPLE_LIMIT` (3) episodes **spread** across the
+  series (neighbours share release groups and naming fate). The first is searched alone — a
+  qualifying hit still costs exactly one search — and only a miss fans the rest out
+  concurrently, with `return_exceptions=True` so a timed-out probe abstains instead of failing
+  the add.
+- The payload carries `releasesExist` (did *any* sample see a release at all?) and
+  `sampledEpisodes`. `build_options` withholds **Remove** and marks **Leave monitored**
+  `recommended` whenever `releasesExist` is true, and `_miss_phrase` downgrades "No release" to
+  "No qualifying release". All roadblock copy lives in `frontend/src/lib/resolution.js`
+  (tested) — never assert emptiness the check didn't establish.
 
 - **Available** → fire `SeriesSearch`, return `status="added"`.
 - **Not available, chain configured** → return `status="fallback_suggested"` with an `advance`

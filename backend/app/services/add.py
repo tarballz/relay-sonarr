@@ -18,9 +18,23 @@ async def _noop_emit(event: dict) -> None:
 def _search_message(availability: dict) -> str:
     total = availability.get("totalReleases", 0)
     qualifying = availability.get("releaseCount", 0)
+    sampled = len(availability.get("sampledEpisodes") or [])
     if total == 0:
-        return "No releases found"
+        return ("No releases found"
+                + (f" (checked {sampled} episodes)" if sampled > 1 else ""))
     return f"{total} found, {qualifying} qualify"
+
+
+def _miss_phrase(availability: dict) -> str:
+    """How to describe a miss without overclaiming.
+
+    "No release" is only true when the indexers returned nothing at all. When
+    releases came back and none qualified, saying the series is empty is what
+    talked a user into deleting a series that had 83 releases.
+    """
+    if availability.get("releasesExist"):
+        return "No qualifying release"
+    return "No release"
 
 
 def _grab_message(grab_result: dict, instance_name: str) -> str:
@@ -172,6 +186,7 @@ def build_options(
     chain_key: str,
     next_index: int,
     resolved: dict | None,
+    availability: dict | None = None,
 ) -> list[dict]:
     """The menu of resolution options shown to the user at a roadblock.
 
@@ -180,8 +195,20 @@ def build_options(
     with a reason rather than omitted, so the menu has the same shape whether the
     response is ``fallback_suggested`` or ``exhausted``. Each option carries the
     ``payload`` the UI echoes back to drive the matching endpoint.
+
+    ``availability`` steers the two options that can destroy something. When the
+    indexers returned releases and none qualified here, the series is *not*
+    empty — the reconciler will keep searching every episode and grab them as
+    they qualify — so removal is withheld and leaving it monitored is marked as
+    the recommended answer.
     """
     has_next = resolved is not None
+    # "Nothing qualified on the episodes we sampled" is not "nothing exists".
+    releases_exist = bool(
+        availability
+        and not availability.get("available")
+        and availability.get("releasesExist")
+    )
     same_instance = has_next and resolved["instanceId"] == from_instance_id
     cross_instance = has_next and not same_instance
     here_remove = {"instanceId": from_instance_id, "seriesId": from_series_id}
@@ -272,20 +299,31 @@ def build_options(
         "id": "leave",
         "action": "leave",
         "label": "Leave monitored",
-        "description": "Keep the series where it is, monitored — it'll grab "
-        "automatically if a release appears later.",
+        "description": (
+            "Releases exist for this series — none matched this tier on the "
+            "episodes sampled. Relay searches every episode on its own schedule "
+            "and will grab them as they qualify."
+            if releases_exist else
+            "Keep the series where it is, monitored — it'll grab "
+            "automatically if a release appears later."
+        ),
         "enabled": True,
         "disabledReason": None,
+        "recommended": releases_exist,
         "payload": {},
     })
     options.append({
         "id": "remove",
         "action": "remove",
-        "label": "Remove the empty series",
+        "label": ("Remove the series" if releases_exist
+                  else "Remove the empty series"),
         "description": "Delete the series that has no downloadable release "
         "(files already on disk are kept).",
-        "enabled": True,
-        "disabledReason": None,
+        "enabled": not releases_exist,
+        "disabledReason": (
+            "releases exist for this series — remove it from the Library if "
+            "you're sure" if releases_exist else None
+        ),
         "payload": here_remove,
     })
     return options
@@ -330,6 +368,7 @@ async def _suggest_next(
             chain_key=chain_key,
             next_index=next_index,
             resolved=resolved,
+            availability=availability,
         ),
     }
 
@@ -513,7 +552,7 @@ async def advance_fallback(
 
     if next_index + 1 < len(chain):
         await emit({"phase": "fallback", "status": "done",
-                    "message": f"No release on {target_name} — suggesting the next tier"})
+                    "message": f"{_miss_phrase(availability)} on {target_name} — suggesting the next tier"})
         return await _suggest_next(
             registry,
             tvdb_id=tvdb_id,
@@ -526,7 +565,7 @@ async def advance_fallback(
 
     # End of the chain: leave it monitored on the last tier so it grabs later.
     await emit({"phase": "exhausted", "status": "done",
-                "message": f"No release on any tier — left monitored on {target_name}"})
+                "message": f"{_miss_phrase(availability)} on any tier — left monitored on {target_name}"})
     return {
         "status": "exhausted",
         "instanceId": new_instance_id,
@@ -540,6 +579,7 @@ async def advance_fallback(
             chain_key=chain_key,
             next_index=next_index + 1,
             resolved=None,
+            availability=availability,
         ),
     }
 
@@ -597,7 +637,7 @@ async def reattempt_search(
     chain = registry.fallback_chain(chain_key)
     if next_index < len(chain):
         await emit({"phase": "fallback", "status": "done",
-                    "message": f"Still nothing on {inst.name} — choose how to proceed"})
+                    "message": f"{_miss_phrase(availability)} on {inst.name} yet — choose how to proceed"})
         return await _suggest_next(
             registry,
             tvdb_id=tvdb_id,
@@ -609,7 +649,7 @@ async def reattempt_search(
         )
 
     await emit({"phase": "exhausted", "status": "done",
-                "message": f"Still no release on {inst.name} — left monitored"})
+                "message": f"{_miss_phrase(availability)} on {inst.name} — left monitored"})
     return {
         "status": "exhausted",
         "instanceId": instance_id,
@@ -622,6 +662,7 @@ async def reattempt_search(
             chain_key=chain_key,
             next_index=next_index,
             resolved=None,
+            availability=availability,
         ),
     }
 

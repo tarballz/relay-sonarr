@@ -1,23 +1,23 @@
 import { motion } from "framer-motion";
 import { tierClass } from "../api.js";
+import {
+  reasonText,
+  roadblockGlyph,
+  roadblockNote,
+  roadblockTitle,
+} from "../lib/resolution.js";
 import { Spinner } from "./Shared.jsx";
-
-// Turn an availability result into a one-line "why nothing qualified" summary.
-export function reasonText(av) {
-  if (!av) return "";
-  const total = av.totalReleases || 0;
-  if (total === 0) return "No releases found at all.";
-  const parts = (av.rejectionSummary || []).map((r) => `${r.count} ${r.reason}`);
-  return `${total} found, none qualified${parts.length ? " — " + parts.join(", ") : ""}.`;
-}
 
 // The roadblock menu: render the backend-supplied `options` as choice cards.
 // Shared by the live AddDialog and the Operations "Resolve" flow. Each click
 // hands the whole option back to `onDispatch`, which routes by `option.action`.
 // `busyId` is the id of the option currently running (shows a spinner on it).
+//
+// All the wording lives in lib/resolution.js — see the note there on why it is
+// worth testing.
 export default function ResolutionOptions({ data, series, onDispatch, busyId }) {
   const options = data?.options || [];
-  const exhausted = data?.status === "exhausted";
+  const note = roadblockNote(data);
   return (
     <motion.div
       className="resolution"
@@ -25,16 +25,13 @@ export default function ResolutionOptions({ data, series, onDispatch, busyId }) 
       animate={{ opacity: 1, y: 0 }}
     >
       <div className="resolution-head">
-        <span className="glyph">{exhausted ? "∅" : "⚠"}</span>
+        <span className="glyph">{roadblockGlyph(data)}</span>
         <div>
-          <strong>
-            {exhausted
-              ? `No release on any tier for “${series.title}.”`
-              : `No qualifying release for “${series.title}” yet.`}
-          </strong>
+          <strong>{roadblockTitle(data, series.title)}</strong>
           {data?.availability && (
             <p className="resolution-reason">{reasonText(data.availability)}</p>
           )}
+          {note && <p className="resolution-note">{note}</p>}
           <p className="resolution-prompt">Choose how to resolve it:</p>
         </div>
       </div>
@@ -46,12 +43,15 @@ export default function ResolutionOptions({ data, series, onDispatch, busyId }) 
           return (
             <button
               key={o.id}
-              className={`resolution-opt ${tier} ${o.action === "remove" ? "danger" : ""}`}
+              className={`resolution-opt ${tier} ${o.action === "remove" ? "danger" : ""}${
+                o.recommended ? " recommended" : ""
+              }`}
               disabled={!o.enabled || (busyId && !running)}
               onClick={() => onDispatch(o)}
             >
               <span className="resolution-opt-label">
                 {running && <Spinner />} {o.label}
+                {o.recommended && <span className="resolution-opt-tag">Recommended</span>}
               </span>
               <span className="resolution-opt-desc">
                 {o.enabled ? o.description : o.disabledReason || o.description}

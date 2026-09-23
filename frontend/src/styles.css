@@ -661,6 +661,11 @@ label.field {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+.resolution-note {
+  margin: 6px 0 0;
+  color: var(--ok);
+  font-size: 12px;
+}
 .resolution-prompt {
   margin: 8px 0 0;
   color: var(--ink-dim);
@@ -719,6 +724,22 @@ label.field {
 }
 .resolution-opt.danger .resolution-opt-label {
   color: var(--danger);
+}
+.resolution-opt.recommended {
+  border-color: var(--ok);
+}
+.resolution-opt-tag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--ok);
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
 }
 .resolution-opt-desc {
   color: var(--ink-dim);
