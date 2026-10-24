@@ -171,7 +171,8 @@ async def test_sweep_dangerous_respects_cap(tmp_path):
     db = Database(str(tmp_path / "relay.db"))
     ops = OperationStore(db)
     reg = make_registry()
-    records = [_rec(id=40 + i, title=f"Fake.S01E0{i}.1080p.WEB-GRP.exe") for i in range(4)]
+    records = [_rec(id=40 + i, downloadId=f"H{i}", title=f"Fake.S01E0{i}.1080p.WEB-GRP.exe")
+               for i in range(4)]  # four separate downloads, not one pack
     respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(records))
     respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
     for i in range(4):

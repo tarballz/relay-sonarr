@@ -397,6 +397,12 @@ class Reconciler:
         rows = {(r["season"], r["episode"]): dict(r)
                 for r in await place_store.get_for_series(self.db, tvdb)}
 
+        # When each qualifying verdict on the desired tier was reached.
+        qualified_at = {
+            (r["season"], r["episode"]): r["checked_at"]
+            for r in await avail_cache.get_for_series(self.db, tvdb)
+            if r["instance_id"] == desired and r["qualifies"]
+        }
         search_desired: list[tuple] = []
         fills: dict[tuple, list[tuple]] = {}  # (instanceId, profile, root) -> keys
         for e in plan["episodes"]:
@@ -406,9 +412,15 @@ class Reconciler:
             row = rows.get(key, {})
             # Respect backoff in any state: failed downloads and searches the
             # stall sweep reverted after finding nothing both set next_retry_at.
+            # Exception: a qualifying release found *since* the last search is
+            # new evidence, not a retry — act on it. (A failed download keeps
+            # its backoff: that release is what just failed.)
             nr = row.get("next_retry_at")
             if nr and nr > now.isoformat():
-                continue
+                fresh = qualified_at.get(key)
+                if not (e["state"] != "failed" and e["obtainableTier"] == desired
+                        and fresh and fresh > (row.get("last_search_at") or "")):
+                    continue
             if e["obtainableTier"] == desired:
                 search_desired.append(key)
                 continue

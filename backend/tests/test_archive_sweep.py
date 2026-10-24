@@ -157,3 +157,31 @@ async def test_stuck_import_warns_even_when_first_seen_late(db, journal):
     await sweep_archives(reg, db, ops, cap=25, now=NOW + timedelta(hours=1))
 
     assert len(await _events(journal, db, kinds.SWEEP_IMPORT_STUCK)) == 1
+
+
+def test_archive_state_match_is_case_insensitive():
+    # M-4: _queue_state lowercases trackedDownloadState; detection must agree.
+    rec = _archive(".7z", trackedDownloadState="ImportPending")
+    assert _is_unimportable_archive(rec, now=NOW, grace_hours=2) is True
+
+
+@respx.mock
+async def test_season_pack_is_removed_once_and_all_its_episodes_researched(db, journal):
+    # M-5: a season pack is one download with a queue record per episode. One
+    # DELETE removes it; repeating it per record only logs errored operations.
+    ops = OperationStore(db)
+    reg = make_registry()
+    pack = [_archive(".rar", id=80 + e, downloadId="PACK",
+                     episode={"id": 900 + e, "seasonNumber": 1, "episodeNumber": e})
+            for e in (1, 2, 3)]
+    respx.get(f"{A}/api/v3/queue").mock(return_value=_queue(pack))
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    deletes = respx.route(method="DELETE", url__startswith=f"{A}/api/v3/queue/").mock(
+        return_value=httpx.Response(200))
+    cmd = respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+
+    assert await sweep_archives(reg, db, ops, cap=25, now=NOW) == 1
+
+    assert deletes.call_count == 1
+    assert sorted(json.loads(cmd.calls.last.request.content)["episodeIds"]) == [901, 902, 903]
+    assert [o["kind"] for o in await ops.recent()] == ["archive-cleanup"]

@@ -12,6 +12,7 @@ from app.policy import SeriesPolicy
 from app.reconciler import Reconciler
 from app.store import availability as avail_cache
 from app.store import intents as intent_store
+from app.services import placement
 from app.store import placements as place_store
 from app.store import settings as settings_store
 from app.store.operations import OperationStore
@@ -651,3 +652,34 @@ async def test_reconcile_skips_wanted_row_in_backoff(tmp_path):
     assert fill.call_count == fills
 
     assert (await at(NOW + timedelta(hours=2)).reconcile_series(intent))["filled"] == 1
+
+
+@respx.mock
+async def test_fresh_qualifying_verdict_overrides_search_backoff(tmp_path):
+    # M-3: a row the stall sweep backed off (attempts only reset on import) must
+    # not sit at the 1-day cap once a release that qualifies shows up — a
+    # verdict checked *after* the last search is new evidence.
+    reg, db, ops, rec = _make(tmp_path)
+    _mock_4k()
+    search = respx.post(f"{B}/api/v3/command").mock(
+        return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    respx.post(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json={}))
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    for ep, ok in ((2, False), (3, True)):
+        await avail_cache.put(
+            db, instance_id="4k", tvdb_id=TVDB, season=1, episode=ep,
+            qualifies=ok, total_releases=1, qualifying_count=int(ok), rejection_json="[]",
+            checked_at=(NOW - timedelta(minutes=5)).isoformat(), min_seeders=0)
+    await placement.compute_plan(reg, db, tvdb_id=TVDB, desired_tier="4k", now=NOW)
+    await place_store.update_tracking(
+        db, TVDB, 1, 3, updated_at=NOW.isoformat(), state="wanted", attempts=9,
+        last_search_at=(NOW - timedelta(hours=7)).isoformat(),
+        next_retry_at=(NOW + timedelta(hours=20)).isoformat())
+    pol = SeriesPolicy(preferredTier="4k", fallbacks=[], allowSplit=False)
+    intent = {"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men", "policy_json": pol.to_json()}
+
+    out = await rec.reconcile_series(intent)
+
+    assert out.get("searchedOnDesired") == 1
+    assert search.called

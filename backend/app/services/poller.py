@@ -126,15 +126,16 @@ async def poll_instance(
                 fields["download_id"] = dl
         if new_state is None:
             continue
+        # The row is shared across instances, and compute_plan owns "imported"
+        # (a file is on disk somewhere). Another tier's upgrade download or stale
+        # failure must not move it: Silo S01E01 flipped imported -> failed 649
+        # times that way, and upgrades flip imported <-> grabbed every tick.
+        if row["state"] == "imported" and new_state != "imported":
+            continue
 
         if new_state == "failed":
             if row["state"] == "failed":
                 continue  # already recorded — don't inflate attempts/backoff
-            # The row is shared across instances: a stale failure in one tier's
-            # history must not regress an episode another tier already has on
-            # disk (Silo S01E01 flipped imported -> failed 649 times this way).
-            if row["state"] == "imported":
-                continue
             attempts = (row["attempts"] or 0) + 1
             fields["attempts"] = attempts
             fields["next_retry_at"] = (now + _backoff(attempts, retry_base, retry_max)).isoformat()
@@ -533,12 +534,24 @@ def _is_dangerous(record: dict) -> bool:
     return any(marker in text for marker in _DANGER_MARKERS)
 
 
-async def _remove_and_research(inst, ops, record: dict, *, tvdb_id, now: datetime,
-                               op_kind: str, kind: str, reason: str) -> bool:
-    """Remove + blocklist one queue item, re-search its episode, and record it.
+def _by_download(records: list[dict]) -> list[list[dict]]:
+    """Group queue records by download. A season pack is one download with a
+    record per episode: one DELETE removes all of them, so acting per record
+    repeats the delete and logs every repeat as an errored operation."""
+    groups: dict = {}
+    for r in records:
+        groups.setdefault(r.get("downloadId") or ("queue", r.get("id")), []).append(r)
+    return list(groups.values())
 
-    Shared by the dangerous and archive sweeps. Returns whether the removal
-    succeeded; a failure is logged and recorded on the operation, never raised."""
+
+async def _remove_and_research(inst, ops, records: list[dict], *, tvdb_id, now: datetime,
+                               op_kind: str, kind: str, reason: str) -> bool:
+    """Remove + blocklist one download, re-search all its episodes, and record it.
+
+    ``records`` are the download's queue records (one per episode). Shared by
+    the dangerous and archive sweeps. Returns whether the removal succeeded; a
+    failure is logged and recorded on the operation, never raised."""
+    record = records[0]
     title = _stalled_title(record)
     op_id = await ops.start(
         kind=op_kind, title=title, tvdb_id=tvdb_id,
@@ -546,9 +559,9 @@ async def _remove_and_research(inst, ops, record: dict, *, tvdb_id, now: datetim
     )
     try:
         await inst.client.delete_queue_item(record["id"])
-        ep_id = (record.get("episode") or {}).get("id")
-        if ep_id:
-            await inst.client.command("EpisodeSearch", episodeIds=[ep_id])
+        ep_ids = [i for i in ((r.get("episode") or {}).get("id") for r in records) if i]
+        if ep_ids:
+            await inst.client.command("EpisodeSearch", episodeIds=ep_ids)
         await ops.add_step(op_id, {
             "phase": "remove", "status": "done",
             "message": f"Removed {reason} — {title} (blocklisted, re-searching)",
@@ -583,11 +596,12 @@ async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
         if isinstance(res, Exception):
             continue
         tvdb_of = _tvdb_lookup(inst.client)
-        for r in res.get("records", []):
-            if not _is_dangerous(r) or removed >= cap:
-                continue
+        flagged = [r for r in res.get("records", []) if _is_dangerous(r)]
+        for group in _by_download(flagged):
+            if removed >= cap:
+                break
             if await _remove_and_research(
-                inst, ops, r, tvdb_id=await tvdb_of(r.get("seriesId")), now=now,
+                inst, ops, group, tvdb_id=await tvdb_of(group[0].get("seriesId")), now=now,
                 op_kind="dangerous-cleanup", kind=kinds.SWEEP_DANGEROUS_REMOVED,
                 reason="dangerous release (executable payload)",
             ):
@@ -608,9 +622,13 @@ ARCHIVE_GRACE_HOURS = 2
 STUCK_IMPORT_WARN_HOURS = 24
 
 
+def _import_pending(record: dict) -> bool:
+    return (record.get("trackedDownloadState") or "").lower() == "importpending"
+
+
 def _is_unimportable_archive(record: dict, *, now: datetime, grace_hours: float) -> bool:
     """importPending archive release, older than ``grace_hours`` since it was added."""
-    if record.get("trackedDownloadState") != "importPending":
+    if not _import_pending(record):
         return False
     if not _ARCHIVE_EXT.search(_status_text(record)):
         return False
@@ -634,19 +652,21 @@ async def sweep_archives(registry, db, ops, *, cap: int, now: datetime,
         if isinstance(res, Exception):
             continue
         tvdb_of = _tvdb_lookup(inst.client)
-        for r in res.get("records", []):
-            if _is_unimportable_archive(r, now=now, grace_hours=grace_hours):
-                if removed >= cap:
-                    continue
-                if await _remove_and_research(
-                    inst, ops, r, tvdb_id=await tvdb_of(r.get("seriesId")), now=now,
-                    op_kind="archive-cleanup", kind=kinds.SWEEP_ARCHIVE_REMOVED,
-                    reason="unimportable archive release",
-                ):
-                    removed += 1
-                    SWEEP_REMOVED.inc(sweep="archive")
-                continue
-            if r.get("trackedDownloadState") != "importPending":
+        records = res.get("records", [])
+        archives = [r for r in records
+                    if _is_unimportable_archive(r, now=now, grace_hours=grace_hours)]
+        for group in _by_download(archives):
+            if removed >= cap:
+                break
+            if await _remove_and_research(
+                inst, ops, group, tvdb_id=await tvdb_of(group[0].get("seriesId")), now=now,
+                op_kind="archive-cleanup", kind=kinds.SWEEP_ARCHIVE_REMOVED,
+                reason="unimportable archive release",
+            ):
+                removed += 1
+                SWEEP_REMOVED.inc(sweep="archive")
+        for r in records:
+            if r in archives or not _import_pending(r):
                 continue
             age = _added_age_hours(r, now)
             if (age is not None and age >= stuck_warn_hours

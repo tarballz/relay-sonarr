@@ -897,3 +897,22 @@ async def test_floor_change_does_not_re_search_a_zero_release_verdict(tmp_path):
     await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
 
     assert route.call_count == 0
+
+
+@respx.mock
+async def test_compute_plan_clears_backoff_once_an_episode_is_on_disk(tmp_path):
+    # M-2: an import the poller never saw (history window, manual import) must
+    # still clear the backoff, or a later re-want is blocked for up to a day.
+    reg = make_registry()
+    _mock_library()
+    db = _db(tmp_path)
+    await place_store.upsert(db, tvdb_id=TVDB, season=1, episode=1, desired_tier="4k",
+                             obtained_tier=None, state="failed", reason=None, updated_at="t")
+    await place_store.update_tracking(db, TVDB, 1, 1, updated_at="t", attempts=4,
+                                      next_retry_at="2099-01-01T00:00:00+00:00")
+
+    await placement.compute_plan(reg, db, tvdb_id=TVDB)
+
+    row = await place_store.get(db, TVDB, 1, 1)
+    assert row["state"] == "imported"
+    assert row["attempts"] == 0 and row["next_retry_at"] is None

@@ -501,6 +501,14 @@ async def compute_plan(
             desired_tier=desired, obtained_tier=obtained, state=state,
             reason=reason, wanted_since=wanted_since, updated_at=now.isoformat(),
         )
+        # On disk clears any backoff, even for an import the poller never saw
+        # (history window, manual import): it described a gap that's gone.
+        prev_row = prev_rows.get((season, epnum)) or {}
+        if state == "imported" and (prev_row.get("attempts") or prev_row.get("next_retry_at")):
+            await place_store.update_tracking(
+                db, tvdb_id, season, epnum, updated_at=now.isoformat(),
+                attempts=0, next_retry_at=None,
+            )
         episodes_out.append({
             "season": season, "episode": epnum, "desiredTier": desired,
             "obtainedTier": obtained, "obtainableTier": obtainable,

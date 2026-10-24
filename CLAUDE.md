@@ -179,6 +179,10 @@ default 30 min).
   failed/imported/unmonitored`).
 - **Identity** — cross-instance episode identity is always `(tvdb_id, season, episode)`; Sonarr
   `seriesId`/episode ids are per-instance and must be mapped to tvdb before persisting.
+  The placement row is shared across instances, so **`compute_plan` owns `imported`** (a file is
+  on disk somewhere): the poller never moves an imported row — another tier's upgrade or stale
+  `downloadFailed` would flip it every tick (Silo S01E01: 649 times) — and reaching `imported`
+  by either path clears `attempts`/`next_retry_at`.
 - **Policy & settings** — `policy.py` (per-series `SeriesPolicy`), runtime defaults in
   `meta.default_policy` via `store/settings.py` — `minSeeders` (5), `stalledDays` (1),
   `deadHours` (6), `regrabCap` (5), `nearCompletePct` (95), `seederRelaxAfterDays` (3),

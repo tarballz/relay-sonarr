@@ -164,3 +164,24 @@ async def test_import_transition_resets_backoff(tmp_path):
     assert row["state"] == "imported"
     assert row["attempts"] == 0
     assert row["next_retry_at"] is None
+
+
+@respx.mock
+async def test_inflight_upgrade_does_not_move_an_imported_row(tmp_path):
+    # M-1: a 4K upgrade downloading for an episode already imported on 1080p must
+    # not flip the shared row imported -> importing (compute_plan flips it back,
+    # journaling a pair of transitions every tick, and a paused intent never does).
+    reg = make_registry()
+    db = _db(tmp_path)
+    await _seed(db, (1, 1), state="imported")
+    _mock_4k_series()
+    respx.get(f"{B}/api/v3/queue").mock(return_value=httpx.Response(200, json={"records": [
+        {"seriesId": 10, "downloadId": "UP", "status": "downloading",
+         "trackedDownloadState": "downloading",
+         "episode": {"seasonNumber": 1, "episodeNumber": 1}}]}))
+    respx.get(f"{B}/api/v3/history").mock(return_value=_history(
+        {"eventType": "grabbed", "seriesId": 10, "downloadId": "UP",
+         "episode": {"seasonNumber": 1, "episodeNumber": 1}}))
+
+    assert await poller.poll_instance(reg, db, reg.get("4k")) == []
+    assert (await place_store.get(db, TVDB, 1, 1))["state"] == "imported"
