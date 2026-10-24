@@ -15,6 +15,8 @@ POLL_INSTANCE_ERROR = "poll.instance_error"
 
 SWEEP_STALLED_REMOVED = "sweep.stalled.removed"
 SWEEP_DANGEROUS_REMOVED = "sweep.dangerous.removed"
+SWEEP_ARCHIVE_REMOVED = "sweep.archive.removed"
+SWEEP_IMPORT_STUCK = "sweep.import_stuck"
 SWEEP_SEARCH_STALL_REVERTED = "sweep.search_stall.reverted"
 SWEEP_FAILED = "sweep.failed"
 SWEEP_STALLED_REGRABBED = "sweep.stalled.regrabbed"

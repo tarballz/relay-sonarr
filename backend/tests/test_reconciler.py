@@ -25,8 +25,10 @@ def _make(tmp_path):
     db = Database(str(tmp_path / "relay.db"))
     reg = make_registry()
     ops = OperationStore(db)
+    # The archive sweep has its own tick tests (test_archive_sweep.py); left on
+    # here it would hit unmocked queues and wait out a 30s connect timeout.
     rec = Reconciler(reg, db, ops, clock=lambda: NOW, sleep=_nosleep,
-                     wait_attempts=2, wait_delay=0)
+                     wait_attempts=2, wait_delay=0, archive_cleanup=False)
     return reg, db, ops, rec
 
 

@@ -10,6 +10,7 @@ ignored. Idempotent: re-applying the same history is a no-op.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from app.obs import kinds
@@ -476,6 +477,25 @@ _DANGER_MARKERS = (
 )
 
 
+def _status_text(record: dict) -> str:
+    """Sonarr's statusMessages flattened to one lowercased string for matching."""
+    return " ".join(
+        " ".join([sm.get("title") or ""] + list(sm.get("messages") or []))
+        for sm in record.get("statusMessages") or []
+    ).lower()
+
+
+def _added_age_hours(record: dict, now: datetime) -> float | None:
+    added = record.get("added")
+    if not added:
+        return None
+    try:
+        added_dt = datetime.fromisoformat(str(added).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (now - added_dt).total_seconds() / 3600.0
+
+
 def _is_dangerous(record: dict) -> bool:
     """Queue item whose release is an executable/malware fake.
 
@@ -487,11 +507,45 @@ def _is_dangerous(record: dict) -> bool:
     """
     if looks_dangerous(record):
         return True
-    for sm in record.get("statusMessages") or []:
-        text = " ".join([sm.get("title") or ""] + list(sm.get("messages") or [])).lower()
-        if any(marker in text for marker in _DANGER_MARKERS):
-            return True
-    return False
+    text = _status_text(record)
+    return any(marker in text for marker in _DANGER_MARKERS)
+
+
+async def _remove_and_research(inst, ops, record: dict, *, tvdb_id, now: datetime,
+                               op_kind: str, kind: str, reason: str) -> bool:
+    """Remove + blocklist one queue item, re-search its episode, and record it.
+
+    Shared by the dangerous and archive sweeps. Returns whether the removal
+    succeeded; a failure is logged and recorded on the operation, never raised."""
+    title = _stalled_title(record)
+    op_id = await ops.start(
+        kind=op_kind, title=title, tvdb_id=tvdb_id,
+        started_at=now.isoformat(), source="reconciler",
+    )
+    try:
+        await inst.client.delete_queue_item(record["id"])
+        ep_id = (record.get("episode") or {}).get("id")
+        if ep_id:
+            await inst.client.command("EpisodeSearch", episodeIds=[ep_id])
+        await ops.add_step(op_id, {
+            "phase": "remove", "status": "done",
+            "message": f"Removed {reason} — {title} (blocklisted, re-searching)",
+        })
+        await ops.finish(op_id, result={"removed": True, "downloadId": record.get("downloadId")},
+                         finished_at=now.isoformat())
+        get_journal().emit(
+            kind,
+            f"Removed {reason} — {title} (re-searching)",
+            level="warn", source="sweep", tvdb_id=tvdb_id, instance_id=inst.id,
+            operation_id=op_id,
+            data={"title": title, "downloadId": record.get("downloadId"),
+                  "queueId": record["id"]},
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
+        await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
+        logger.warning("failed to remove %s %s: %s", reason, record.get("id"), exc)
+        return False
 
 
 async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
@@ -510,36 +564,79 @@ async def sweep_dangerous(registry, db, ops, *, cap: int, now: datetime) -> int:
         for r in res.get("records", []):
             if not _is_dangerous(r) or removed >= cap:
                 continue
-            title = _stalled_title(r)
-            tvdb_id = await tvdb_of(r.get("seriesId"))
-            op_id = await ops.start(
-                kind="dangerous-cleanup", title=title, tvdb_id=tvdb_id,
-                started_at=now.isoformat(), source="reconciler",
-            )
-            try:
-                await inst.client.delete_queue_item(r["id"])
-                ep_id = (r.get("episode") or {}).get("id")
-                if ep_id:
-                    await inst.client.command("EpisodeSearch", episodeIds=[ep_id])
-                await ops.add_step(op_id, {
-                    "phase": "remove", "status": "done",
-                    "message": f"Removed dangerous release — {title} "
-                               f"(executable payload; blocklisted, re-searching)",
-                })
-                await ops.finish(op_id, result={"removed": True, "downloadId": r.get("downloadId")},
-                                 finished_at=now.isoformat())
+            if await _remove_and_research(
+                inst, ops, r, tvdb_id=await tvdb_of(r.get("seriesId")), now=now,
+                op_kind="dangerous-cleanup", kind=kinds.SWEEP_DANGEROUS_REMOVED,
+                reason="dangerous release (executable payload)",
+            ):
                 removed += 1
                 SWEEP_REMOVED.inc(sweep="dangerous")
-                get_journal().emit(
-                    kinds.SWEEP_DANGEROUS_REMOVED,
-                    f"Removed dangerous release — {title} (executable payload; re-searching)",
-                    level="warn", source="sweep", tvdb_id=tvdb_id, instance_id=inst.id,
-                    operation_id=op_id,
-                    data={"title": title, "downloadId": r.get("downloadId"), "queueId": r["id"]},
-                )
-            except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the sweep
-                await ops.finish(op_id, error=str(exc), finished_at=now.isoformat())
-                logger.warning("failed to remove dangerous release %s: %s", r.get("id"), exc)
     if removed:
         logger.info("dangerous sweep removed %d release(s)", removed)
+    return removed
+
+
+# Archive releases Sonarr refuses as the episode file itself. The stack runs no
+# unpacker, so these can never import: at best a dead slot, at worst a
+# password-protected scam. Kept apart from _DANGER_MARKERS on purpose — an
+# archive is not evidence of malware, and other named extensions (a bonus .iso)
+# are format problems this sweep must leave alone.
+_ARCHIVE_EXT = re.compile(r"unsupported extension: '\.(7z|rar|zip|r\d\d)'")
+ARCHIVE_GRACE_HOURS = 2
+STUCK_IMPORT_WARN_HOURS = 24
+
+
+def _is_unimportable_archive(record: dict, *, now: datetime, grace_hours: float) -> bool:
+    """importPending archive release, older than ``grace_hours`` since it was added."""
+    if record.get("trackedDownloadState") != "importPending":
+        return False
+    if not _ARCHIVE_EXT.search(_status_text(record)):
+        return False
+    age = _added_age_hours(record, now)
+    return age is not None and age >= grace_hours
+
+
+async def sweep_archives(registry, db, ops, *, cap: int, now: datetime,
+                         grace_hours: float = ARCHIVE_GRACE_HOURS,
+                         stuck_warn_hours: float = STUCK_IMPORT_WARN_HOURS,
+                         interval_s: float) -> int:
+    """Remove + blocklist unimportable archive releases, then re-search.
+
+    Also warns once about any other import stuck past ``stuck_warn_hours`` —
+    the gap that let the S29E01 fake sit for 7 days. "Once" is stateless: the
+    warning fires only on the tick whose window contains the threshold
+    crossing, so it never repeats and needs no bookkeeping."""
+    removed = 0
+    window_h = interval_s / 3600.0
+    for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
+        if isinstance(res, Exception):
+            continue
+        tvdb_of = _tvdb_lookup(inst.client)
+        for r in res.get("records", []):
+            if _is_unimportable_archive(r, now=now, grace_hours=grace_hours):
+                if removed >= cap:
+                    continue
+                if await _remove_and_research(
+                    inst, ops, r, tvdb_id=await tvdb_of(r.get("seriesId")), now=now,
+                    op_kind="archive-cleanup", kind=kinds.SWEEP_ARCHIVE_REMOVED,
+                    reason="unimportable archive release",
+                ):
+                    removed += 1
+                    SWEEP_REMOVED.inc(sweep="archive")
+                continue
+            if r.get("trackedDownloadState") != "importPending":
+                continue
+            age = _added_age_hours(r, now)
+            if age is not None and stuck_warn_hours <= age < stuck_warn_hours + window_h:
+                title = _stalled_title(r)
+                get_journal().emit(
+                    kinds.SWEEP_IMPORT_STUCK,
+                    f"{title} has waited {age:.0f}h to import on {inst.id} — "
+                    f"{_status_text(r) or 'no reason given'}",
+                    level="warn", source="sweep", tvdb_id=await tvdb_of(r.get("seriesId")),
+                    instance_id=inst.id,
+                    data={"title": title, "downloadId": r.get("downloadId"), "queueId": r["id"]},
+                )
+    if removed:
+        logger.info("archive sweep removed %d release(s)", removed)
     return removed

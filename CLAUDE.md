@@ -137,6 +137,13 @@ default 30 min).
   generally). **If you ever add a downloads-tree mount**, a magic-byte check (`MZ`, `\x7fELF`,
   `#!`) on the actual file becomes possible and would be strictly stronger than trusting
   Sonarr's message text — but there's no such mount today.
+- **Unimportable archives** — the stack runs no unpacker, so a release Sonarr refuses with
+  `unsupported extension: '.7z'|'.rar'|'.zip'|'.rNN'` can never import. `sweep_archives`
+  (`poller.py`, `ARCHIVE_CLEANUP_ENABLED`) removes + blocklists it after
+  `ARCHIVE_GRACE_HOURS` and re-searches — a separate sweep/kind, *not* a danger marker
+  (an archive isn't evidence of malware). It also journals `sweep.import_stuck` once for any
+  other import pending past `STUCK_IMPORT_WARN_HOURS` (stateless: only on the tick whose
+  window contains the crossing). Live incident 2026-10-23: two `.7z` episodes sat 2+ days.
 - **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
   metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
   = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`
