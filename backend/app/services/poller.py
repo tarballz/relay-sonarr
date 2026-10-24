@@ -34,6 +34,11 @@ DEFAULT_RETRY_BASE = 900       # 15 min
 DEFAULT_RETRY_MAX = 24 * 3600  # 1 day
 
 
+def _backoff(attempts: int, base: float, max_: float) -> timedelta:
+    """Exponential retry delay for the ``attempts``-th failure, capped at ``max_``."""
+    return timedelta(seconds=min(max_, base * (2 ** (attempts - 1))))
+
+
 def _now(now: datetime | None) -> datetime:
     return now or datetime.now(timezone.utc)
 
@@ -130,9 +135,8 @@ async def poll_instance(
             if row["state"] == "imported":
                 continue
             attempts = (row["attempts"] or 0) + 1
-            delay = min(retry_max, retry_base * (2 ** (attempts - 1)))
             fields["attempts"] = attempts
-            fields["next_retry_at"] = (now + timedelta(seconds=delay)).isoformat()
+            fields["next_retry_at"] = (now + _backoff(attempts, retry_base, retry_max)).isoformat()
         elif row["state"] == new_state:
             continue  # no change
 
@@ -169,8 +173,9 @@ async def poll_all(registry: Registry, db, *, now: datetime | None = None, **kw)
     return {"instances": out, "transitionCount": total}
 
 
-async def sweep_search_stalls(db, *, stall_hours: float, cap: int,
-                              now: datetime) -> list[dict]:
+async def sweep_search_stalls(db, *, stall_hours: float, cap: int, now: datetime,
+                              retry_base: float = DEFAULT_RETRY_BASE,
+                              retry_max: float = DEFAULT_RETRY_MAX) -> list[dict]:
     """Revert episodes wedged in 'searching' back to 'wanted' so the reconciler
     re-searches them.
 
@@ -179,21 +184,29 @@ async def sweep_search_stalls(db, *, stall_hours: float, cap: int,
     history event, so the poller never advances it and it stays 'searching'
     forever. This reaper reverts rows that are 'searching', have no download_id,
     and were last searched more than ``stall_hours`` ago. Pure DB state — makes
-    no Sonarr calls. Returns the transitions applied (for the caller to log)."""
+    no Sonarr calls. Returns the transitions applied (for the caller to log).
+
+    A revert counts as a failed attempt and sets ``next_retry_at`` with the same
+    exponential backoff as a failed download, so an episode nothing can satisfy
+    is retried ever less often instead of blindly every ``stall_hours``."""
     before = (now - timedelta(hours=stall_hours)).isoformat()
     rows = await place_store.stalled_searching(db, before_iso=before, limit=cap)
     transitions: list[dict] = []
     for row in rows:
+        attempts = (row["attempts"] or 0) + 1
+        next_retry_at = (now + _backoff(attempts, retry_base, retry_max)).isoformat()
         await place_store.update_tracking(
             db, row["tvdb_id"], row["season"], row["episode"],
             updated_at=now.isoformat(), state="wanted",
+            attempts=attempts, next_retry_at=next_retry_at,
         )
         get_journal().emit(
             kinds.SWEEP_SEARCH_STALL_REVERTED,
             f"S{row['season']:02d}E{row['episode']:02d} searched over {stall_hours:g}h ago "
             f"with no download — back to wanted",
             source="sweep", tvdb_id=row["tvdb_id"], season=row["season"], episode=row["episode"],
-            data={"lastSearchAt": row["last_search_at"]},
+            data={"lastSearchAt": row["last_search_at"], "attempts": attempts,
+                  "nextRetryAt": next_retry_at},
         )
         transitions.append({
             "tvdbId": row["tvdb_id"], "season": row["season"],

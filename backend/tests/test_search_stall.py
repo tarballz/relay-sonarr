@@ -156,3 +156,41 @@ async def test_tick_skips_reaper_when_disabled(tmp_path):
     await rec.tick()
 
     assert (await place_store.get(db, 777, 1, 2))["state"] == "searching"
+
+
+# --- backoff ------------------------------------------------------------------
+# Live incident: South Park S29E05/06 were filled on 1080p, found nothing, and
+# were reverted every ~6h (14x in 48h) with attempts=0 — a blind retry loop.
+
+from app.services.poller import DEFAULT_RETRY_BASE, DEFAULT_RETRY_MAX  # noqa: E402
+
+
+async def test_revert_sets_backoff(db, journal):
+    from app.obs import kinds
+    from app.store import events as events_store
+    await _seed(db, 1, 1, 1, state="searching",
+                last_search_at=(NOW - timedelta(hours=12)).isoformat())
+    await place_store.update_tracking(db, 1, 1, 1, updated_at=NOW.isoformat(), attempts=2)
+
+    await sweep_search_stalls(db, stall_hours=6, cap=25, now=NOW)
+
+    row = await place_store.get(db, 1, 1, 1)
+    expected = (NOW + timedelta(seconds=min(DEFAULT_RETRY_MAX, DEFAULT_RETRY_BASE * 2 ** 2)))
+    assert row["state"] == "wanted"
+    assert row["attempts"] == 3
+    assert row["next_retry_at"] == expected.isoformat()
+    await journal.flush()
+    ev = (await events_store.query(db, kind=kinds.SWEEP_SEARCH_STALL_REVERTED))[0]
+    assert ev["data"]["attempts"] == 3 and ev["data"]["nextRetryAt"] == expected.isoformat()
+
+
+async def test_backoff_capped_at_one_day(tmp_path):
+    db = Database(str(tmp_path / "relay.db"))
+    await _seed(db, 1, 1, 1, state="searching",
+                last_search_at=(NOW - timedelta(hours=12)).isoformat())
+    await place_store.update_tracking(db, 1, 1, 1, updated_at=NOW.isoformat(), attempts=20)
+
+    await sweep_search_stalls(db, stall_hours=6, cap=25, now=NOW)
+
+    row = await place_store.get(db, 1, 1, 1)
+    assert row["next_retry_at"] == (NOW + timedelta(days=1)).isoformat()

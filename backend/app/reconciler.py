@@ -405,10 +405,11 @@ class Reconciler:
                 continue
             key = (e["season"], e["episode"])
             row = rows.get(key, {})
-            if e["state"] == "failed":  # respect backoff
-                nr = row.get("next_retry_at")
-                if nr and nr > now.isoformat():
-                    continue
+            # Respect backoff in any state: failed downloads and searches the
+            # stall sweep reverted after finding nothing both set next_retry_at.
+            nr = row.get("next_retry_at")
+            if nr and nr > now.isoformat():
+                continue
             if e["obtainableTier"] == desired:
                 search_desired.append(key)
                 continue

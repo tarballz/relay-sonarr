@@ -612,3 +612,42 @@ async def test_sweep_defaults_favour_replacing_dead_grabs_quickly(tmp_path, monk
     assert seen["dead_hours"] == 6
     assert seen["min_seeders"] == 5
     assert seen["regrab_cap"] == 5
+
+
+@respx.mock
+async def test_reconcile_skips_wanted_row_in_backoff(tmp_path):
+    # A fill that found nothing is reverted to 'wanted' with a next_retry_at;
+    # the reconciler must honour it instead of re-filling every tick.
+    reg, db, ops, _ = _make(tmp_path)
+    _mock_4k()
+    respx.post(f"{B}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.put(f"{B}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    mock_1080p_profiles()
+    respx.get(f"{A}/api/v3/series").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{A}/api/v3/series/lookup").mock(
+        return_value=httpx.Response(200, json=[{"tvdbId": TVDB, "title": "Mad Men"}]))
+    fill = respx.post(f"{A}/api/v3/series").mock(return_value=httpx.Response(201, json={"id": 20}))
+    respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 2}))
+    respx.get(f"{A}/api/v3/episode").mock(return_value=httpx.Response(200, json=[
+        {"id": 2002, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False},
+    ]))
+    respx.put(f"{A}/api/v3/episode/monitor").mock(return_value=httpx.Response(200, json=[]))
+    pol = SeriesPolicy(preferredTier="4k", fallbacks=[{"instanceId": "1080p", "afterDays": 0}],
+                       allowSplit=True)
+    intent = {"tvdb_id": TVDB, "chain_key": "4k", "title": "Mad Men", "policy_json": pol.to_json()}
+
+    def at(t):
+        return Reconciler(reg, db, ops, clock=lambda: t, sleep=_nosleep, wait_attempts=2,
+                          wait_delay=0, archive_cleanup=False)
+
+    assert (await at(NOW).reconcile_series(intent))["filled"] == 1
+    fills = fill.call_count
+    # The stall sweep reverted the fill with a backoff 1h out.
+    await place_store.update_tracking(db, TVDB, 1, 2, updated_at=NOW.isoformat(), state="wanted",
+                                      next_retry_at=(NOW + timedelta(hours=1)).isoformat())
+
+    assert (await at(NOW + timedelta(minutes=30)).reconcile_series(intent)) == {
+        "tvdbId": TVDB, "actions": 0}
+    assert fill.call_count == fills
+
+    assert (await at(NOW + timedelta(hours=2)).reconcile_series(intent))["filled"] == 1
