@@ -104,6 +104,9 @@ async def poll_instance(
         if event == EVENT_IMPORTED:
             new_state = "imported"
             fields["obtained_tier"] = instance.id
+            # Imported clears the failure backoff: it described a gap that's gone.
+            fields["attempts"] = 0
+            fields["next_retry_at"] = None
         elif key in queue_state:
             new_state, dl = queue_state[key]
             if dl:
@@ -121,6 +124,11 @@ async def poll_instance(
         if new_state == "failed":
             if row["state"] == "failed":
                 continue  # already recorded — don't inflate attempts/backoff
+            # The row is shared across instances: a stale failure in one tier's
+            # history must not regress an episode another tier already has on
+            # disk (Silo S01E01 flipped imported -> failed 649 times this way).
+            if row["state"] == "imported":
+                continue
             attempts = (row["attempts"] or 0) + 1
             delay = min(retry_max, retry_base * (2 ** (attempts - 1)))
             fields["attempts"] = attempts

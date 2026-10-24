@@ -62,3 +62,23 @@ def test_operation_has_tick_id_column(tmp_path):
     cols = {r["name"] for r in db._conn.execute("PRAGMA table_info(operation)")}
     assert "tick_id" in cols
     db.close()
+
+
+def test_imported_backoff_repair_resets_attempts_once(tmp_path):
+    # Silo S01E01 accrued attempts=582 from a stale failure flipping an imported row.
+    path = str(tmp_path / "relay.db")
+    db = Database(path)
+    db._conn.execute(
+        "INSERT INTO placement(tvdb_id, season, episode, state, attempts, next_retry_at) "
+        "VALUES(403245, 1, 1, 'imported', 582, '2026-10-24T23:26:09+00:00'),"
+        "      (1, 1, 1, 'failed', 3, '2026-10-24T00:00:00+00:00')")
+    db._conn.execute("DELETE FROM meta WHERE key='reset_imported_backoff_2026_10'")
+    db._conn.commit()
+    db.close()
+
+    db = Database(path)
+    rows = {r["tvdb_id"]: (r["attempts"], r["next_retry_at"])
+            for r in db._conn.execute("SELECT * FROM placement")}
+    assert rows[403245] == (0, None)
+    assert rows[1] == (3, "2026-10-24T00:00:00+00:00")  # real backoff untouched
+    db.close()

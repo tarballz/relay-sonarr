@@ -115,3 +115,52 @@ def test_poll_endpoint_summarizes(tmp_path):
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_registry, None)
+
+
+def _history(*records):
+    return httpx.Response(200, json={"records": list(records)})
+
+
+@respx.mock
+async def test_failed_history_does_not_regress_imported(db, journal):
+    # Live incident: Silo S01E01 is imported on 1080p, but a stale downloadFailed
+    # in the 4K instance's history flipped the shared row imported -> failed on
+    # every tick (649 times, attempts=582) while compute_plan flipped it back.
+    from app.obs import kinds
+    from app.store import events as events_store
+    reg = make_registry()
+    await _seed(db, (1, 1), state="imported")
+    _mock_4k_series()
+    respx.get(f"{B}/api/v3/queue").mock(return_value=httpx.Response(200, json={"records": []}))
+    respx.get(f"{B}/api/v3/history").mock(return_value=_history(
+        {"eventType": "downloadFailed", "seriesId": 10, "downloadId": None,
+         "episode": {"seasonNumber": 1, "episodeNumber": 1}}))
+
+    assert await poller.poll_instance(reg, db, reg.get("4k")) == []
+
+    row = await place_store.get(db, TVDB, 1, 1)
+    assert row["state"] == "imported"
+    assert row["attempts"] == 0
+    await journal.flush()
+    assert await events_store.query(db, kind=kinds.POLL_TRANSITION) == []
+
+
+@respx.mock
+async def test_import_transition_resets_backoff(tmp_path):
+    reg = make_registry()
+    db = _db(tmp_path)
+    await _seed(db, (2, 1), state="failed")
+    await place_store.update_tracking(db, TVDB, 2, 1, updated_at="t1", attempts=4,
+                                      next_retry_at="2099-01-01T00:00:00+00:00")
+    _mock_4k_series()
+    respx.get(f"{B}/api/v3/queue").mock(return_value=httpx.Response(200, json={"records": []}))
+    respx.get(f"{B}/api/v3/history").mock(return_value=_history(
+        {"eventType": "downloadFolderImported", "seriesId": 10, "downloadId": "D1",
+         "episode": {"seasonNumber": 2, "episodeNumber": 1}}))
+
+    await poller.poll_instance(reg, db, reg.get("4k"))
+
+    row = await place_store.get(db, TVDB, 2, 1)
+    assert row["state"] == "imported"
+    assert row["attempts"] == 0
+    assert row["next_retry_at"] is None

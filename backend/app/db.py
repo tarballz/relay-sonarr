@@ -197,6 +197,12 @@ class Database:
         )
         # Correlates an operation with the reconciler tick that started it.
         self._ensure_column("operation", "tick_id", "INTEGER")
+        # A stale failure in one tier's history kept regressing imported rows,
+        # inflating attempts/next_retry_at on episodes that were never missing.
+        self._run_once(
+            "reset_imported_backoff_2026_10",
+            "UPDATE placement SET attempts=0, next_retry_at=NULL WHERE state='imported'",
+        )
 
     def _run_once(self, key: str, sql: str) -> None:
         """Apply a one-time data repair, remembered in ``meta`` so it never re-runs
