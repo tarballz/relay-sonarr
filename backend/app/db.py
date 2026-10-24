@@ -187,6 +187,8 @@ class Database:
         # Best grab candidate {guid, indexerId, seeders, title} captured during
         # the availability check, so the reconciler can grab without re-searching.
         self._ensure_column("availability_cache", "best_release_json", "TEXT")
+        # Consecutive zero-release verdicts; drives the escalating empty TTL.
+        self._ensure_column("availability_cache", "zero_streak", "INTEGER")
         # The stalled/dangerous sweeps once stored Sonarr's per-instance seriesId
         # as tvdb_id. The instance wasn't recorded, so the real tvdb id can't be
         # recovered: clear the misleading values rather than guess.

@@ -39,6 +39,17 @@ def test_tick_stats_counts_and_zero_spikes():
     }
 
 
+def test_repeat_zero_excluded_from_spike():
+    # Back-catalogue that keeps returning nothing is expected, not an outage.
+    s = TickStats()
+    for _ in range(300):
+        s.availability("1080p", "zero_repeat")
+    for _ in range(5):
+        s.availability("1080p", "zero")
+    assert s.zero_spikes() == {}
+    assert s.to_phases()["availability"]["live"] == 305
+
+
 @respx.mock
 async def test_poll_transition_is_journaled(db, journal):
     reg = make_registry()

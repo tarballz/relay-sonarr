@@ -168,6 +168,11 @@ default 30 min).
   and froze the cache for 36h. A gated verdict is still **cached**, flagged `degraded` with a
   short `degradedTtlMinutes`; discarding it instead removes the only thing that ever repairs a
   stale row, so the episode is re-searched forever and never learns.
+  **(3) a repeat-empty verdict escalates** (`_zero_ttl`, `availability_cache.zero_streak`) — each
+  further zero on an aired episode doubles its empty TTL up to `ZERO_TTL_CAP` (7d), with a
+  deterministic ±10% per-episode jitter; episodes aired <14d stay flat; degraded answers hold the
+  streak; repeats report `zero_repeat`, so they don't feed the zero-spike alert. Without it,
+  Sgt. Frog's 307 same-instant zero rows re-searched together every 4h (35-85 min ticks).
   `compute_plan` then joins episodes across instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
   failed/imported/unmonitored`).
 - **Identity** — cross-instance episode identity is always `(tvdb_id, season, episode)`; Sonarr

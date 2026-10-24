@@ -774,3 +774,85 @@ async def test_capacity_is_probed_once_per_refresh_not_once_per_episode(tmp_path
 
     assert len(rows) == 6 and all(r["degraded"] for r in rows)
     assert h.call_count == 1
+
+
+# --- repeat-empty escalation ---------------------------------------------------
+# Live incident (2026-10-23): Sgt. Frog's 307 zero-release episodes all shared one
+# checked_at, so every 4h (emptyReleaseTtlMinutes=240) a tick re-searched all of
+# them at once — 35-85 min ticks and a false "indexers may be down" alert.
+
+def _within(value, target, pct=0.1):
+    return target * (1 - pct) <= value <= target * (1 + pct)
+
+
+def test_zero_ttl_escalates():
+    key = ("1080p", 75414, 1, 1)
+    assert _within(placement._zero_ttl(14400, 1, aired_days=400, key=key), 14400)
+    assert _within(placement._zero_ttl(14400, 3, aired_days=400, key=key), 57600)
+    assert placement._zero_ttl(14400, 10, aired_days=400, key=key) <= placement.ZERO_TTL_CAP * 1.1
+
+
+def test_zero_ttl_flat_for_recent_episode():
+    # A just-aired episode's release can land any hour: never push it out by days.
+    assert _within(placement._zero_ttl(14400, 6, aired_days=3, key=("4k", 1, 1, 1)), 14400)
+
+
+def test_zero_ttl_jitter_is_deterministic_and_spread():
+    key = ("1080p", 75414, 2, 7)
+    assert placement._zero_ttl(14400, 1, aired_days=400, key=key) == \
+        placement._zero_ttl(14400, 1, aired_days=400, key=key)
+    values = {placement._zero_ttl(14400, 1, aired_days=400, key=("1080p", 75414, 1, e))
+              for e in range(300)}
+    assert len(values) > 50
+
+
+async def _seed_zero_streak(db, streak, *, checked_at):
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=TVDB, season=1, episode=2,
+        qualifies=False, total_releases=0, qualifying_count=0,
+        rejection_json="[]", checked_at=checked_at, min_seeders=0, zero_streak=streak,
+    )
+
+
+@respx.mock
+async def test_refresh_increments_and_resets_streak(tmp_path):
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    stale = (now - timedelta(days=10)).isoformat()
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    release = respx.get(f"{B}/api/v3/release")
+    db = _db(tmp_path)
+
+    # Another empty answer -> streak grows.
+    release.mock(return_value=httpx.Response(200, json=[]))
+    _mock_indexers(B, ["TPB", "1337x"])
+    _mock_health(B, [])
+    await _seed_zero_streak(db, 2, checked_at=stale)
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["zero_streak"] == 3
+
+    # A degraded empty answer (no working indexers) says nothing -> streak held.
+    _mock_health(B, _failing("TPB", "1337x"))
+    await _seed_zero_streak(db, 2, checked_at=stale)
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["zero_streak"] == 2
+
+    # Releases showed up -> streak resets.
+    release.mock(return_value=httpx.Response(200, json=[{"rejected": False}]))
+    await _seed_zero_streak(db, 2, checked_at=stale)
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["zero_streak"] == 0
+
+
+@respx.mock
+async def test_escalated_zero_verdict_is_not_re_searched(tmp_path):
+    # Streak 3 at a 45min base -> ~3h; checked 2h ago is still fresh.
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    db = _db(tmp_path)
+    await _seed_zero_streak(db, 3, checked_at=(now - timedelta(hours=2)).isoformat())
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0
