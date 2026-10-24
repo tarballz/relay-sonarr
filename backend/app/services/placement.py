@@ -177,6 +177,9 @@ def _verdict_survives_floor_change(cached_floor, qualifies: bool, floor: int) ->
       * a stricter floor can only turn a "yes" into a "no" — a cached "no" stands;
       * a looser floor can only turn a "no" into a "yes" — a cached "yes" stands.
 
+    (A zero-release verdict never reaches here: no floor can make nothing
+    qualify, so the caller reuses it under any floor.)
+
     Everything else has to be re-searched. This matters far more than it looks:
     treating any threshold change as invalidating turned the default moving 3 -> 5
     into 1540 of 1545 verdicts needing a fresh interactive search — hours of them,
@@ -272,9 +275,11 @@ async def refresh_availability(
         cached = await avail_cache.get_cached(db, instance_id, tvdb_id, season, epnum)
         # Consecutive zero verdicts so far. A legacy zero row (no streak column
         # value yet) counts as one, so it keeps the flat empty TTL.
+        cached_zero = cached is not None and cached["total_releases"] == 0
         prev_streak = 0
-        if cached is not None and cached["total_releases"] == 0:
-            prev_streak = cached["zero_streak"] or 1
+        if cached_zero:
+            # NULL only: a stored 0 is a degraded answer that never counted.
+            prev_streak = 1 if cached["zero_streak"] is None else cached["zero_streak"]
         # A zero-release verdict on an aired episode is cheap to be wrong about
         # (outage, or the release just landed) — trust it for a much shorter
         # window than a stable "releases exist but none qualify" verdict, then
@@ -284,7 +289,7 @@ async def refresh_availability(
             if cached is not None and cached["degraded"]
             else _zero_ttl(empty_ttl, prev_streak, aired_days=_aired_days(ep, now),
                            key=(instance_id, tvdb_id, season, epnum))
-            if prev_streak and _has_aired(ep, now)
+            if cached_zero and _has_aired(ep, now)
             else ttl
         )
         # A verdict computed under a different seeder threshold is only stale if
@@ -292,8 +297,8 @@ async def refresh_availability(
         if (
             cached is not None
             and avail_cache.is_fresh(cached["checked_at"], now, effective_ttl)
-            and _verdict_survives_floor_change(
-                cached["min_seeders"], bool(cached["qualifies"]), floor)
+            and (cached_zero or _verdict_survives_floor_change(
+                cached["min_seeders"], bool(cached["qualifies"]), floor))
         ):
             results.append({
                 "season": season, "episode": epnum,

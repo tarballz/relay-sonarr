@@ -69,7 +69,7 @@ async def test_sweep_archives_removes_blocklists_and_researches(db, journal):
     del_route = respx.delete(f"{A}/api/v3/queue/51").mock(return_value=httpx.Response(200))
     cmd = respx.post(f"{A}/api/v3/command").mock(return_value=httpx.Response(201, json={"id": 1}))
 
-    removed = await sweep_archives(reg, db, ops, cap=25, now=NOW, interval_s=3600)
+    removed = await sweep_archives(reg, db, ops, cap=25, now=NOW)
 
     assert removed == 1
     params = del_route.calls.last.request.url.params
@@ -89,16 +89,16 @@ async def test_stuck_import_warns_once(db, journal):
     respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
     queue = respx.get(f"{A}/api/v3/queue")
 
-    # Crossing the 24h threshold on this tick -> one warning.
+    # Past the 24h threshold -> one warning.
     queue.mock(return_value=_queue([_rec(id=61, added=(NOW - timedelta(hours=24.2)).isoformat(),
                                          **stuck)]))
-    assert await sweep_archives(reg, db, ops, cap=25, now=NOW, interval_s=3600) == 0
+    assert await sweep_archives(reg, db, ops, cap=25, now=NOW) == 0
     assert len(await _events(journal, db, kinds.SWEEP_IMPORT_STUCK)) == 1
 
-    # Crossed on an earlier tick -> silent (journal changes, not repetitions).
+    # Already warned for this download -> silent (journal changes, not repetitions).
     queue.mock(return_value=_queue([_rec(id=61, added=(NOW - timedelta(hours=26)).isoformat(),
                                          **stuck)]))
-    await sweep_archives(reg, db, ops, cap=25, now=NOW, interval_s=3600)
+    await sweep_archives(reg, db, ops, cap=25, now=NOW)
     assert len(await _events(journal, db, kinds.SWEEP_IMPORT_STUCK)) == 1
 
 
@@ -138,3 +138,22 @@ async def test_tick_skips_archive_sweep_when_disabled(db, journal):
     await rec.tick()
 
     assert not deleted.called
+
+
+@respx.mock
+async def test_stuck_import_warns_even_when_first_seen_late(db, journal):
+    # Ticks run tick-duration + interval apart (77min + 60min live), so a
+    # crossing can fall between sweeps. It must still warn — once per download.
+    ops = OperationStore(db)
+    reg = make_registry()
+    stuck = {"statusMessages": [{"title": "x", "messages": ["Episode file already imported"]}]}
+    respx.get(f"{B}/api/v3/queue").mock(return_value=_queue([]))
+    queue = respx.get(f"{A}/api/v3/queue")
+    queue.mock(return_value=_queue([_rec(id=62, downloadId="LATE",
+                                         added=(NOW - timedelta(hours=27)).isoformat(), **stuck)]))
+
+    await sweep_archives(reg, db, ops, cap=25, now=NOW)
+    await journal.flush()
+    await sweep_archives(reg, db, ops, cap=25, now=NOW + timedelta(hours=1))
+
+    assert len(await _events(journal, db, kinds.SWEEP_IMPORT_STUCK)) == 1

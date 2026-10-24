@@ -142,8 +142,9 @@ default 30 min).
   (`poller.py`, `ARCHIVE_CLEANUP_ENABLED`) removes + blocklists it after
   `ARCHIVE_GRACE_HOURS` and re-searches — a separate sweep/kind, *not* a danger marker
   (an archive isn't evidence of malware). It also journals `sweep.import_stuck` once for any
-  other import pending past `STUCK_IMPORT_WARN_HOURS` (stateless: only on the tick whose
-  window contains the crossing). Live incident 2026-10-23: two `.7z` episodes sat 2+ days.
+  other import pending past `STUCK_IMPORT_WARN_HOURS` (deduped per `downloadId` against the
+  journal — ticks run duration + interval apart, so a time window would miss crossings).
+  Live incident 2026-10-23: two `.7z` episodes sat 2+ days.
 - **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
   metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
   = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`
@@ -171,7 +172,8 @@ default 30 min).
   **(3) a repeat-empty verdict escalates** (`_zero_ttl`, `availability_cache.zero_streak`) — each
   further zero on an aired episode doubles its empty TTL up to `ZERO_TTL_CAP` (7d), with a
   deterministic ±10% per-episode jitter; episodes aired <14d stay flat; degraded answers hold the
-  streak; repeats report `zero_repeat`, so they don't feed the zero-spike alert. Without it,
+  streak; a zero row survives any seeder-floor change (no floor makes nothing qualify); repeats
+  report `zero_repeat`, so they don't feed the zero-spike alert. Without it,
   Sgt. Frog's 307 same-instant zero rows re-searched together every 4h (35-85 min ticks).
   `compute_plan` then joins episodes across instances into per-episode `placement` rows (`wanted/unavailable/searching/grabbed/importing/
   failed/imported/unmonitored`).

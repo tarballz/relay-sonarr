@@ -856,3 +856,44 @@ async def test_escalated_zero_verdict_is_not_re_searched(tmp_path):
     await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
 
     assert route.call_count == 0
+
+
+@respx.mock
+async def test_degraded_first_check_does_not_inflate_the_streak(tmp_path):
+    # An outage on an episode's first-ever check stores total=0, streak=0. The
+    # first real zero after it is streak 1 — the outage must not cost a doubling.
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    _mock_indexers(B, ["TPB"])
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+
+    _mock_health(B, _failing("TPB"))
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["zero_streak"] == 0
+
+    _mock_health(B, [])
+    later = now + timedelta(days=1)
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=later)
+    assert (await avail_cache.get_cached(db, "4k", TVDB, 1, 2))["zero_streak"] == 1
+
+
+@respx.mock
+async def test_floor_change_does_not_re_search_a_zero_release_verdict(tmp_path):
+    # No seeder floor can make zero releases qualify: a looser floor must not
+    # send every escalated zero row back to search at once.
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    _mock_gap_with_airdate("2026-07-15T04:00:00Z")
+    route = respx.get(f"{B}/api/v3/release").mock(return_value=httpx.Response(200, json=[]))
+    db = _db(tmp_path)
+    await settings_store.set_defaults(db, {"minSeeders": 0})
+    await avail_cache.put(
+        db, instance_id="4k", tvdb_id=TVDB, season=1, episode=2,
+        qualifies=False, total_releases=0, qualifying_count=0, rejection_json="[]",
+        checked_at=(now - timedelta(hours=2)).isoformat(), min_seeders=5, zero_streak=3,
+    )
+
+    await placement.refresh_availability(make_registry(), db, tvdb_id=TVDB, instance_id="4k", now=now)
+
+    assert route.call_count == 0

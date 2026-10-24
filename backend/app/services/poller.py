@@ -23,6 +23,7 @@ from app.services.liveness import is_dead
 
 logger = logging.getLogger(__name__)
 from app.sonarr.registry import Instance, Registry
+from app.store import events as events_store
 from app.store import placements as place_store
 from app.store import progress
 
@@ -619,16 +620,16 @@ def _is_unimportable_archive(record: dict, *, now: datetime, grace_hours: float)
 
 async def sweep_archives(registry, db, ops, *, cap: int, now: datetime,
                          grace_hours: float = ARCHIVE_GRACE_HOURS,
-                         stuck_warn_hours: float = STUCK_IMPORT_WARN_HOURS,
-                         interval_s: float) -> int:
+                         stuck_warn_hours: float = STUCK_IMPORT_WARN_HOURS) -> int:
     """Remove + blocklist unimportable archive releases, then re-search.
 
-    Also warns once about any other import stuck past ``stuck_warn_hours`` —
-    the gap that let the S29E01 fake sit for 7 days. "Once" is stateless: the
-    warning fires only on the tick whose window contains the threshold
-    crossing, so it never repeats and needs no bookkeeping."""
+    Also warns once per download about any other import stuck past
+    ``stuck_warn_hours`` — the gap that let the S29E01 fake sit for 7 days."""
     removed = 0
-    window_h = interval_s / 3600.0
+    # Ticks run duration + interval (+ jitter) apart, so a threshold "window"
+    # misses crossings; the journal itself is the once-per-download record.
+    warned = {(e.get("data") or {}).get("downloadId")
+              for e in await events_store.query(db, kind=kinds.SWEEP_IMPORT_STUCK, limit=1000)}
     for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
         if isinstance(res, Exception):
             continue
@@ -648,7 +649,9 @@ async def sweep_archives(registry, db, ops, *, cap: int, now: datetime,
             if r.get("trackedDownloadState") != "importPending":
                 continue
             age = _added_age_hours(r, now)
-            if age is not None and stuck_warn_hours <= age < stuck_warn_hours + window_h:
+            if (age is not None and age >= stuck_warn_hours
+                    and r.get("downloadId") not in warned):
+                warned.add(r.get("downloadId"))
                 title = _stalled_title(r)
                 get_journal().emit(
                     kinds.SWEEP_IMPORT_STUCK,

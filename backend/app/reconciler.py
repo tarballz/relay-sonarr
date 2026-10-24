@@ -325,7 +325,6 @@ class Reconciler:
             async with self._phase(stats, "sweep_archive", swallow=True) as phase:
                 phase["count"] = await poller.sweep_archives(
                     self.registry, self.db, self.ops, cap=self._stalled_cap, now=self.now(),
-                    interval_s=self.interval,
                 )
                 stats.swept += phase["count"]
         if self.search_stall_cleanup:
