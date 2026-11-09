@@ -94,7 +94,9 @@ CREATE TABLE IF NOT EXISTS operation_step (
 CREATE TABLE IF NOT EXISTS download_progress (
   download_id     TEXT PRIMARY KEY,
   sizeleft        INTEGER,
-  unchanged_since TEXT
+  unchanged_since TEXT,
+  nudge_count     INTEGER NOT NULL DEFAULT 0,
+  last_nudge_at   TEXT
 );
 
 -- One row per reconciler tick: persisted health history (survives restarts).
@@ -199,6 +201,11 @@ class Database:
         )
         # Correlates an operation with the reconciler tick that started it.
         self._ensure_column("operation", "tick_id", "INTEGER")
+        # Frozen-torrent nudges: how many times the sweep re-announced/restarted
+        # a torrent, and when. A sizeleft change resets both (see store/progress).
+        self._ensure_column("download_progress", "nudge_count",
+                            "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("download_progress", "last_nudge_at", "TEXT")
         # A stale failure in one tier's history kept regressing imported rows,
         # inflating attempts/next_retry_at on episodes that were never missing.
         self._run_once(

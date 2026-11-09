@@ -7,6 +7,10 @@ makes stall detection stateful — hence this table.
 
 Keyed on ``downloadId`` (the torrent), not the queue-record id: a season pack
 produces one queue record per episode, all sharing a single torrent.
+
+The same row also tracks how many times the frozen-nudge sweep has re-announced
+and restarted the torrent. Moving bytes resets that budget, so each freeze gets
+its own pair of chances instead of the torrent being nudged forever.
 """
 from __future__ import annotations
 
@@ -22,6 +26,9 @@ async def observe(db: Database, *, download_id: str, sizeleft: int,
     Returns the ISO timestamp since which ``sizeleft`` has been unchanged. On the
     first sighting that is ``now`` — a torrent is never judged stalled on the
     strength of a single observation.
+
+    A change in ``sizeleft`` also clears the nudge budget: the torrent proved it
+    can move again, so a later freeze starts fresh.
     """
     row = await db.query_one(
         "SELECT sizeleft, unchanged_since FROM download_progress WHERE download_id=?",
@@ -31,11 +38,38 @@ async def observe(db: Database, *, download_id: str, sizeleft: int,
         return str(row["unchanged_since"])
     stamp = now.isoformat()
     await db.execute(
-        "INSERT OR REPLACE INTO download_progress(download_id, sizeleft, unchanged_since) "
-        "VALUES(?, ?, ?)",
+        "INSERT INTO download_progress"
+        "(download_id, sizeleft, unchanged_since, nudge_count, last_nudge_at) "
+        "VALUES(?, ?, ?, 0, NULL) "
+        "ON CONFLICT(download_id) DO UPDATE SET "
+        "sizeleft=excluded.sizeleft, unchanged_since=excluded.unchanged_since, "
+        "nudge_count=0, last_nudge_at=NULL",
         (download_id, sizeleft, stamp),
     )
     return stamp
+
+
+async def nudge_state(db: Database, download_id: str) -> dict:
+    """How many nudges this torrent has had, and when the last one was sent."""
+    row = await db.query_one(
+        "SELECT nudge_count, last_nudge_at FROM download_progress WHERE download_id=?",
+        (download_id,),
+    )
+    if row is None:
+        return {"nudge_count": 0, "last_nudge_at": None}
+    return {
+        "nudge_count": int(row["nudge_count"] or 0),
+        "last_nudge_at": row["last_nudge_at"],
+    }
+
+
+async def note_nudge(db: Database, download_id: str, now: datetime) -> None:
+    """Record one nudge. Caller must have observed the torrent first (row exists)."""
+    await db.execute(
+        "UPDATE download_progress SET nudge_count=COALESCE(nudge_count, 0) + 1, "
+        "last_nudge_at=? WHERE download_id=?",
+        (now.isoformat(), download_id),
+    )
 
 
 async def forget(db: Database, download_id: str) -> None:

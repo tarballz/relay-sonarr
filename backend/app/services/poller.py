@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.obs import kinds
 from app.obs.journal import get_journal
-from app.obs.metrics import SWEEP_REMOVED
+from app.obs.metrics import SWEEP_NUDGED, SWEEP_REMOVED
 from app.services import grab
 from app.services.availability import looks_dangerous
 from app.services.fanout import gather_instances
@@ -346,12 +346,132 @@ DEFAULT_REGRAB_CAP = 5
 # blocklist means the replacement restarts from zero.
 NEAR_COMPLETE_GRACE_DAYS = 3.0
 
+# Frozen-download recovery. A torrent can hold a peer that never sends and sit
+# one block short of done indefinitely (live: S13E06 at 99.9% for 40 minutes
+# with two peers and zero bytes moved). A re-announce plus a stop/start resets
+# its peer state; only if the budget is spent does the removal clock shorten.
+DEFAULT_NUDGE_AFTER_MINUTES = 30.0
+DEFAULT_NUDGE_COOLDOWN_MINUTES = 60.0
+DEFAULT_NUDGE_CAP = 2
+DEFAULT_FROZEN_AFTER_NUDGE_HOURS = 6.0
+
+
+def _minutes_since(stamp: str | None, now: datetime) -> int:
+    """Whole minutes between a stored ISO timestamp and ``now`` (0 if unusable)."""
+    if not stamp:
+        return 0
+    try:
+        seen = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return max(0, int((now - seen).total_seconds() // 60))
+
+
+async def sweep_frozen(registry, db, *, now: datetime,
+                       liveness: dict | None = None,
+                       nudge_after_minutes: float = DEFAULT_NUDGE_AFTER_MINUTES,
+                       cooldown_minutes: float = DEFAULT_NUDGE_COOLDOWN_MINUTES,
+                       max_nudges: int = DEFAULT_NUDGE_CAP,
+                       cap: int = 25) -> int:
+    """Nudge torrents that are incomplete but have stopped moving.
+
+    A nudge is a tracker re-announce followed by a stop/start: it asks for a
+    fresh peer list and drops a peer/choke state that may be wedged. The
+    trigger is ``sizeleft`` unchanged for ``nudge_after_minutes`` — not the
+    instantaneous rate, which is too noisy to act on.
+
+    Dead swarms are left to ``sweep_stalled`` (no nudge can conjure peers), and
+    user-paused torrents are never touched. Each torrent gets ``max_nudges``
+    attempts separated by ``cooldown_minutes``; moving bytes resets the budget.
+    Failures are soft: one bad torrent never fails the sweep.
+    """
+    client = registry.downloads()
+    if client is None or not liveness or max_nudges <= 0 or cap <= 0:
+        return 0
+
+    nudged = 0
+    for inst, res in await gather_instances(registry, lambda i: i.client.queue()):
+        if isinstance(res, Exception):
+            continue
+        groups: dict[str, list[dict]] = {}
+        for rec in res.get("records", []):
+            key = (rec.get("downloadId") or "").strip().lower()
+            if key:
+                groups.setdefault(key, []).append(rec)
+        tvdb_of = _tvdb_lookup(inst.client)
+
+        for key, recs in groups.items():
+            r = recs[0]
+            if r.get("protocol") != "torrent":
+                continue
+            if (r.get("status") or "").lower() not in _STALLABLE_STATUSES:
+                continue
+            total_left = sum((x.get("sizeleft") or 0) for x in recs)
+            if total_left <= 0:
+                continue
+            swarm = liveness.get(key)
+            if swarm is None or is_dead(swarm):
+                continue
+
+            unchanged_since = await progress.observe(
+                db, download_id=key, sizeleft=total_left, now=now,
+            )
+            if swarm.rate_download > 0:
+                continue
+            if not progress.stalled_since(
+                    unchanged_since, now=now,
+                    stalled_days=nudge_after_minutes / 1440.0):
+                continue
+
+            state = await progress.nudge_state(db, key)
+            if state["nudge_count"] >= max_nudges:
+                continue
+            last = state["last_nudge_at"]
+            if last and not progress.stalled_since(
+                    last, now=now, stalled_days=cooldown_minutes / 1440.0):
+                continue
+
+            try:
+                await client.reannounce(key)
+                await client.restart(key)
+            except Exception as exc:  # noqa: BLE001 - one torrent must not fail the sweep
+                logger.warning("frozen nudge failed for %s: %s", key, exc)
+                continue
+
+            await progress.note_nudge(db, key, now)
+            title = _stalled_title(r)
+            tvdb_id = await tvdb_of(r.get("seriesId"))
+            get_journal().emit(
+                kinds.SWEEP_FROZEN_NUDGED,
+                f"Nudged frozen download — {title}, no progress for "
+                f"{_minutes_since(unchanged_since, now)} min with "
+                f"{total_left} bytes left",
+                source="sweep", tvdb_id=tvdb_id, instance_id=inst.id,
+                data={"downloadId": key, "left": total_left,
+                      "peers": swarm.peers_connected,
+                      "seeders": swarm.max_seeders,
+                      "nudgeCount": state["nudge_count"] + 1},
+            )
+            SWEEP_NUDGED.inc(sweep="frozen")
+            nudged += 1
+            if nudged >= cap:
+                logger.warning("frozen-nudge sweep hit per-tick cap (%d); "
+                               "more may remain and will be nudged next tick", cap)
+                return nudged
+
+    if nudged:
+        logger.info("frozen-nudge sweep nudged %d torrent(s)", nudged)
+    return nudged
+
 
 async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
                         now: datetime, dead_hours: float = 6.0,
                         liveness: dict | None = None,
                         near_complete_pct: float = 95.0,
-                        min_seeders: int = 0, regrab_cap: int = 0) -> int:
+                        min_seeders: int = 0, regrab_cap: int = 0,
+                        nudge_cap: int = 0,
+                        frozen_after_nudge_hours: float = DEFAULT_FROZEN_AFTER_NUDGE_HOURS,
+                        nudge_cooldown_minutes: float = DEFAULT_NUDGE_COOLDOWN_MINUTES) -> int:
     """Remove torrents stuck at 0% past the threshold. Sonarr removes them from the
     client, blocklists the release, and re-searches. Returns the number removed.
 
@@ -397,25 +517,52 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             total_size = sum((x.get("size") or 0) for x in recs)
             swarm = (liveness or {}).get(key)
 
-            # Bytes are moving: the download client is the only ground truth
-            # about the swarm, so it overrides every age/progress heuristic.
-            # Still record the observation, or the frozen clock would restart
-            # from scratch the moment it does stall.
-            if swarm is not None and (swarm.peers_connected > 0 or swarm.rate_download > 0):
-                await progress.observe(db, download_id=key, sizeleft=total_left, now=now)
-                continue
-
+            # Observe every torrent, even one with peers: a connected peer that
+            # never sends is exactly the S13E06 failure, and without the
+            # observation the frozen clock would never start.
             unchanged_since = await progress.observe(
                 db, download_id=key, sizeleft=total_left, now=now,
             )
+
+            # Bytes are moving: the download client is the only ground truth
+            # about the swarm, so it overrides every age/progress heuristic.
+            if swarm is not None and swarm.rate_download > 0:
+                continue
+
             pct_done = (total_size - total_left) / total_size if total_size else 0.0
             dead = swarm is not None and is_dead(swarm)
+            state = await progress.nudge_state(db, key)
+            # A zero cap means the frozen-nudge sweep is disabled: keep the old
+            # behaviour exactly, including the three-day near-complete grace.
+            # The final nudge must also have had the cooldown to work — both
+            # sweeps run in one tick, and otherwise a just-sent nudge would be
+            # spent and the torrent removed seconds later.
+            last_nudge = state["last_nudge_at"]
+            nudge_settled = bool(last_nudge) and progress.stalled_since(
+                last_nudge, now=now,
+                stalled_days=nudge_cooldown_minutes / 1440.0)
+            nudge_exhausted = (
+                nudge_cap > 0
+                and state["nudge_count"] >= nudge_cap
+                and nudge_settled
+            )
             if pct_done >= near_complete_pct / 100.0:
-                threshold, reason = max(stalled_days, NEAR_COMPLETE_GRACE_DAYS), "near-complete"
+                if nudge_exhausted:
+                    threshold, reason = (frozen_after_nudge_hours / 24.0,
+                                         "frozen-after-nudge")
+                else:
+                    threshold, reason = (max(stalled_days, NEAR_COMPLETE_GRACE_DAYS),
+                                         "near-complete")
             elif dead:
                 threshold, reason = dead_hours / 24.0, "dead"
             else:
                 threshold, reason = stalled_days, "zero-progress"
+
+            # A connected peer usually means life. Once both nudges have been
+            # spent and the clock still has not moved, that evidence is stronger
+            # than the peer count, so let the frozen threshold decide.
+            if swarm is not None and swarm.peers_connected > 0 and not nudge_exhausted:
+                continue
 
             frozen = (
                 r.get("protocol") == "torrent"

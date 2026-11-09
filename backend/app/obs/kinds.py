@@ -20,6 +20,7 @@ SWEEP_IMPORT_STUCK = "sweep.import_stuck"
 SWEEP_SEARCH_STALL_REVERTED = "sweep.search_stall.reverted"
 SWEEP_FAILED = "sweep.failed"
 SWEEP_STALLED_REGRABBED = "sweep.stalled.regrabbed"
+SWEEP_FROZEN_NUDGED = "sweep.frozen.nudged"
 
 DOWNLOAD_CLIENT_ERROR = "download.client_error"
 

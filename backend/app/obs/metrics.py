@@ -162,4 +162,5 @@ SONARR_UP = METRICS.gauge("relay_sonarr_up", "1 when the Sonarr instance answers
 AVAILABILITY_CHECKS = METRICS.counter(
     "relay_availability_checks_total", "Availability verdicts by result.", ("instance", "result"))
 SWEEP_REMOVED = METRICS.counter("relay_sweep_removed_total", "Items removed by sweeps.", ("sweep",))
+SWEEP_NUDGED = METRICS.counter("relay_sweep_nudged_total", "Downloads nudged by sweeps.", ("sweep",))
 EVENTS_TOTAL = METRICS.counter("relay_events_total", "Journal events emitted.", ("group", "level"))

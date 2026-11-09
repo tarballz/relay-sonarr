@@ -116,8 +116,8 @@ default 30 min).
   repositories in `store/*`. Migrations are additive: `CREATE TABLE IF NOT EXISTS`,
   `_ensure_column`, and `_run_once` for one-time data repairs keyed in `meta`.
 - **Tick** — `poller.poll_all` (queue + history → placement state transitions, failure backoff),
-  then `liveness.liveness_map` (one Transmission call), then the sweeps (`sweep_stalled`,
-  `sweep_dangerous`, `sweep_search_stalls`), then `reconcile_series` per non-paused
+  then `liveness.liveness_map` (one Transmission call), then the sweeps (`sweep_frozen`,
+  `sweep_stalled`, `sweep_dangerous`, `sweep_search_stalls`), then `reconcile_series` per non-paused
   `series_intent`. Ticks are lock-serialized, so one running longer than
   `RECONCILER_INTERVAL_S` just means the loop never idles.
 - **Malware fakes** — Relay has no mount onto the downloads tree (compose only bind-mounts
@@ -153,6 +153,20 @@ default 30 min).
   downloads past `nearCompletePct`, and re-grabs a replacement itself
   (`grab.regrab_episode`, `skipRedownload=true`) because Sonarr's own re-search ranks by
   quality and re-picks another dead release.
+- **Frozen nudges** (`sweep_frozen`, `poller.py`) — a torrent can hold a peer that never
+  sends and sit one block short of done indefinitely. Live incident 2026-10-31: S13E06 was
+  at 99.9% (16 KiB left) with two connected peers and 0 B/s for 40 minutes; a tracker
+  re-announce plus stop/start in Transmission delivered the last block within a minute.
+  `sweep_stalled` deliberately skips any torrent with a connected peer, so the recovery
+  stage runs first: when `sizeleft` has not moved for `nudgeAfterMinutes` (30) and the swarm
+  is not dead, call `torrent-reannounce` + `torrent-stop`/`torrent-start`. Each torrent gets
+  `nudgeCap` (2) attempts separated by `nudgeCooldownMinutes` (60); moving bytes resets the
+  budget. Only after the budget is spent may `sweep_stalled` remove a peer-connected
+  torrent, and a near-complete one then uses `frozenAfterNudgeHours` (6) instead of the
+  three-day grace. With budget remaining, a peer-connected torrent is never removed — the
+  old safety rail. `nudgeCap: 0` disables the path and restores the prior behavior exactly.
+  `TransmissionClient` stays write-limited to these two recovery RPCs; removal still goes
+  through Sonarr's single blocklist path.
 - **Placement** (`services/placement.py`) — `refresh_availability` runs interactive release
   searches on gap episodes (TTL-cached in `availability_cache`; zero-release verdicts on aired
   episodes use the short `emptyReleaseTtlMinutes`). Two rules exist because each was learned

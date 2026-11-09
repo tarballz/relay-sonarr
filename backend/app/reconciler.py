@@ -30,7 +30,11 @@ from app.services import liveness
 from app.services.availability import DEFAULT_MIN_SEEDERS
 from app.services.poller import (
     DEFAULT_DEAD_HOURS,
+    DEFAULT_FROZEN_AFTER_NUDGE_HOURS,
     DEFAULT_NEAR_COMPLETE_PCT,
+    DEFAULT_NUDGE_AFTER_MINUTES,
+    DEFAULT_NUDGE_CAP,
+    DEFAULT_NUDGE_COOLDOWN_MINUTES,
     DEFAULT_REGRAB_CAP,
     DEFAULT_STALLED_DAYS,
 )
@@ -302,6 +306,19 @@ class Reconciler:
                 phase["torrents"] = len(swarms)
                 phase["dead"] = sum(1 for lv in swarms.values() if liveness.is_dead(lv))
         if self.stalled_cleanup:
+            # Cheap recovery first: a torrent holding a peer that never sends
+            # is not dead, but it will not move either. Nudge before removal.
+            async with self._phase(stats, "sweep_frozen", swallow=True) as phase:
+                phase["count"] = await poller.sweep_frozen(
+                    self.registry, self.db, now=self.now(), liveness=swarms,
+                    nudge_after_minutes=float(defaults.get(
+                        "nudgeAfterMinutes", DEFAULT_NUDGE_AFTER_MINUTES)),
+                    cooldown_minutes=float(defaults.get(
+                        "nudgeCooldownMinutes", DEFAULT_NUDGE_COOLDOWN_MINUTES)),
+                    max_nudges=int(defaults.get("nudgeCap", DEFAULT_NUDGE_CAP)),
+                    cap=self._stalled_cap,
+                )
+                stats.swept += phase["count"]
             async with self._phase(stats, "sweep_stalled", swallow=True) as phase:
                 phase["count"] = await poller.sweep_stalled(
                     self.registry, self.db, self.ops,
@@ -313,6 +330,11 @@ class Reconciler:
                                                    DEFAULT_NEAR_COMPLETE_PCT),
                     min_seeders=int(defaults.get("minSeeders", DEFAULT_MIN_SEEDERS)),
                     regrab_cap=int(defaults.get("regrabCap", DEFAULT_REGRAB_CAP)),
+                    nudge_cap=int(defaults.get("nudgeCap", DEFAULT_NUDGE_CAP)),
+                    frozen_after_nudge_hours=float(defaults.get(
+                        "frozenAfterNudgeHours", DEFAULT_FROZEN_AFTER_NUDGE_HOURS)),
+                    nudge_cooldown_minutes=float(defaults.get(
+                        "nudgeCooldownMinutes", DEFAULT_NUDGE_COOLDOWN_MINUTES)),
                 )
                 stats.swept += phase["count"]
         if self.dangerous_cleanup:

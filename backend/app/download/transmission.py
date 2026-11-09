@@ -1,10 +1,15 @@
-"""Read-only Transmission RPC client.
+"""Transmission RPC client.
 
-Relay never removes a torrent here — removal stays on the single existing path,
-Sonarr's ``delete_queue_item`` (which blocklists the release *and* removes it
-from the client). This client exists purely to answer "is this swarm alive?",
-which Sonarr's queue cannot: it reports a torrent with no metadata and no
-seeders as ``trackedDownloadStatus: "ok"``.
+Its main job is answering "is this swarm alive?", which Sonarr's queue cannot:
+it reports a torrent with no metadata and no seeders as
+``trackedDownloadStatus: "ok"``.
+
+Relay still never removes a torrent here — removal stays on the single existing
+path, Sonarr's ``delete_queue_item`` (which blocklists the release *and* removes
+it from the client). The only writes are the frozen-download nudge
+(``reannounce`` + ``restart``): a torrent holding a peer that never sends can
+sit one block short of done forever, and resetting its peer state is the cheap
+way to find out whether that peer was the problem.
 """
 from __future__ import annotations
 
@@ -82,6 +87,19 @@ class TransmissionClient:
         """Every torrent the client holds, with the liveness fields."""
         args = await self._rpc("torrent-get", fields=list(TORRENT_FIELDS))
         return args.get("torrents") or []
+
+    async def reannounce(self, torrent_hash: str) -> None:
+        """Ask the trackers for a fresh peer list right now."""
+        await self._rpc("torrent-reannounce", ids=[torrent_hash])
+
+    async def restart(self, torrent_hash: str) -> None:
+        """Stop then start the torrent, dropping its current peer/choke state.
+
+        A peer that accepted the connection but never sends can leave the
+        torrent stalled; a restart forces a clean re-handshake with the swarm.
+        """
+        await self._rpc("torrent-stop", ids=[torrent_hash])
+        await self._rpc("torrent-start", ids=[torrent_hash])
 
     async def aclose(self) -> None:
         if self._http is None:

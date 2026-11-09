@@ -96,3 +96,29 @@ async def test_non_success_result_raises(client):
 
     with pytest.raises(RuntimeError):
         await client.torrents()
+
+
+def _ok_args():
+    return httpx.Response(200, json={"result": "success", "arguments": {}})
+
+
+@respx.mock
+async def test_reannounce_sends_the_torrent_hash(client):
+    route = respx.post(RPC).mock(side_effect=[_409(), _ok_args()])
+
+    await client.reannounce("abcd")
+
+    body = json.loads(route.calls[1].request.content)
+    assert body["method"] == "torrent-reannounce"
+    assert body["arguments"]["ids"] == ["abcd"]
+
+
+@respx.mock
+async def test_restart_stops_then_starts_the_torrent(client):
+    route = respx.post(RPC).mock(side_effect=[_409(), _ok_args(), _ok_args()])
+
+    await client.restart("abcd")
+
+    bodies = [json.loads(c.request.content) for c in route.calls[1:]]
+    assert [b["method"] for b in bodies] == ["torrent-stop", "torrent-start"]
+    assert all(b["arguments"]["ids"] == ["abcd"] for b in bodies)

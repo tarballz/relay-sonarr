@@ -165,6 +165,10 @@ function DefaultsEditor({ toast, qc }) {
       seederRelaxAfterDays: data.seederRelaxAfterDays ?? 3,
       nearCompletePct: data.nearCompletePct ?? 95,
       regrabCap: data.regrabCap ?? 5,
+      nudgeAfterMinutes: data.nudgeAfterMinutes ?? 30,
+      nudgeCooldownMinutes: data.nudgeCooldownMinutes ?? 60,
+      nudgeCap: data.nudgeCap ?? 2,
+      frozenAfterNudgeHours: data.frozenAfterNudgeHours ?? 6,
     });
   }, [JSON.stringify(data)]);
 
@@ -253,7 +257,71 @@ function DefaultsEditor({ toast, qc }) {
         </label>
         <div className="muted" id="defaults-nearcomplete-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
           A removal blocklists the release, so the replacement restarts from zero.
-          Downloads above this mark keep a 3-day grace instead. Set to 100 to disable.
+          Downloads above this mark keep a 3-day grace instead, unless their nudges
+          are spent (see below). Set to 100 to disable.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Nudge frozen downloads after (minutes)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            aria-describedby="defaults-nudgeafter-help"
+            value={form.nudgeAfterMinutes}
+            onChange={(e) => setForm((f) => ({ ...f, nudgeAfterMinutes: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" id="defaults-nudgeafter-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          When a torrent's remaining bytes have not moved for this long, Relay
+          re-announces it and restarts it in Transmission. This catches the case
+          where a peer accepts the connection but never sends — a download can sit
+          at 99.9% indefinitely with one connected peer.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Wait between nudges (minutes)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            aria-describedby="defaults-nudgecooldown-help"
+            value={form.nudgeCooldownMinutes}
+            onChange={(e) => setForm((f) => ({ ...f, nudgeCooldownMinutes: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" id="defaults-nudgecooldown-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          Give a restarted torrent time to re-handshake with the swarm before
+          nudging it again.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Nudges per stalled torrent (0 = off)
+          <input
+            className="input"
+            type="number"
+            min="0"
+            aria-describedby="defaults-nudgecap-help"
+            value={form.nudgeCap}
+            onChange={(e) => setForm((f) => ({ ...f, nudgeCap: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" id="defaults-nudgecap-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          After this many failed nudges Relay stops poking the torrent. Moving
+          bytes resets the count, so each new freeze gets a fresh budget.
+        </div>
+        <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
+          Remove after failed nudges (hours, near-complete)
+          <input
+            className="input"
+            type="number"
+            min="1"
+            aria-describedby="defaults-frozenafternudge-help"
+            value={form.frozenAfterNudgeHours}
+            onChange={(e) => setForm((f) => ({ ...f, frozenAfterNudgeHours: Number(e.target.value) }))}
+          />
+        </label>
+        <div className="muted" id="defaults-frozenafternudge-help" style={{ fontSize: 12, marginTop: 6, maxWidth: 460 }}>
+          A torrent above the "never discard" mark normally waits 3 days. Once its
+          nudges are spent and its remaining bytes still have not moved for this
+          long, Relay removes and blocklists it and searches for a replacement.
         </div>
         <label className="field" style={{ maxWidth: 260, marginTop: 14 }}>
           Replacement grabs per tick (0 = let Sonarr re-search)
