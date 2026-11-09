@@ -231,6 +231,27 @@ class SonarrClient:
         """Episodes for a series (GET /episode?seriesId=)."""
         return await self._get("/episode", {"seriesId": series_id})
 
+    async def episode_files(self, series_id: int) -> list[dict]:
+        """On-disk files for a series, with mediaInfo tracks (GET /episodefile?seriesId=)."""
+        return await self._get("/episodefile", {"seriesId": series_id})
+
+    async def delete_episode_file(self, file_id: int) -> None:
+        """Delete one file from disk (DELETE /episodefile/{id}). No recycle bin is
+        configured on this stack, so this is permanent."""
+        await self._delete(f"/episodefile/{file_id}")
+
+    async def episode_history(self, episode_id: int, *, page_size: int = 50) -> list[dict]:
+        """History records for one episode, newest first (GET /history?episodeId=)."""
+        res = await self._get("/history", {"episodeId": episode_id, "pageSize": page_size,
+                                           "sortKey": "date", "sortDirection": "descending"})
+        return res.get("records", []) if isinstance(res, dict) else list(res or [])
+
+    async def mark_history_failed(self, history_id: int) -> None:
+        """Mark a grab failed (POST /history/failed/{id}): Sonarr fails the whole
+        download it belongs to and blocklists the release."""
+        # Sonarr answers with an empty body here; don't parse one.
+        await self._request("POST", f"/history/failed/{history_id}", json={})
+
     async def history(self, *, page: int = 1, page_size: int = 200,
                       event_type: str | None = None, include_episode: bool = True) -> dict:
         """Recent history (GET /history) — grab/import/failed events per episode."""

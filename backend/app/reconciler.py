@@ -39,7 +39,7 @@ from app.services.poller import (
     DEFAULT_STALLED_DAYS,
 )
 from app.policy import effective_policy
-from app.services import orchestrate, placement, poller
+from app.services import language, orchestrate, placement, poller
 from app.services.library import combined_series
 from app.store import availability as avail_cache
 from app.store import intents as intent_store
@@ -68,7 +68,8 @@ class Reconciler:
                  wait_delay: float = 1.5, enabled: bool = True,
                  stalled_cleanup: bool = True, stalled_cap: int = 25,
                  dangerous_cleanup: bool = True, archive_cleanup: bool = True,
-                 search_stall_cleanup: bool = True, monitor=None):
+                 search_stall_cleanup: bool = True, language_cleanup: bool = True,
+                 monitor=None):
         self.registry = registry
         self.db = db
         self.ops = operations
@@ -87,6 +88,7 @@ class Reconciler:
         self.dangerous_cleanup = dangerous_cleanup
         self.archive_cleanup = archive_cleanup
         self.search_stall_cleanup = search_stall_cleanup
+        self.language_cleanup = language_cleanup
         self._monitor = monitor
         self._tick_lock = asyncio.Lock()   # one tick at a time: loop or manual
         self._running = False
@@ -346,6 +348,13 @@ class Reconciler:
         if self.archive_cleanup:
             async with self._phase(stats, "sweep_archive", swallow=True) as phase:
                 phase["count"] = await poller.sweep_archives(
+                    self.registry, self.db, self.ops, cap=self._stalled_cap, now=self.now(),
+                )
+                stats.swept += phase["count"]
+        if self.language_cleanup:
+            # Backstop for releases whose title hid that they carry no English.
+            async with self._phase(stats, "sweep_language", swallow=True) as phase:
+                phase["count"] = await language.sweep_language(
                     self.registry, self.db, self.ops, cap=self._stalled_cap, now=self.now(),
                 )
                 stats.swept += phase["count"]

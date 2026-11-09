@@ -21,6 +21,8 @@ SWEEP_SEARCH_STALL_REVERTED = "sweep.search_stall.reverted"
 SWEEP_FAILED = "sweep.failed"
 SWEEP_STALLED_REGRABBED = "sweep.stalled.regrabbed"
 SWEEP_FROZEN_NUDGED = "sweep.frozen.nudged"
+SWEEP_LANGUAGE_REMOVED = "sweep.language.removed"
+SWEEP_LANGUAGE_UNKNOWN = "sweep.language.unknown"
 
 DOWNLOAD_CLIENT_ERROR = "download.client_error"
 

@@ -351,7 +351,8 @@ async def test_tick_runs_the_frozen_nudge_sweep_before_removals(tmp_path, monkey
     reg = make_registry()
     rec = Reconciler(reg, db, OperationStore(db), clock=lambda: NOW, sleep=_nosleep,
                      wait_attempts=2, wait_delay=0, archive_cleanup=False,
-                     dangerous_cleanup=False, search_stall_cleanup=False)
+                     dangerous_cleanup=False, search_stall_cleanup=False,
+                     language_cleanup=False)
     seen = {}
 
     async def fake_poll_all(*a, **k):
@@ -391,6 +392,7 @@ async def test_tick_skips_the_frozen_nudge_sweep_when_stalled_cleanup_is_off(
     rec = Reconciler(reg, db, OperationStore(db), clock=lambda: NOW, sleep=_nosleep,
                      wait_attempts=2, wait_delay=0, archive_cleanup=False,
                      dangerous_cleanup=False, search_stall_cleanup=False,
+                     language_cleanup=False,
                      stalled_cleanup=False)
     called = {"nudge": False}
 

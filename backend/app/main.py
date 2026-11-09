@@ -43,6 +43,10 @@ def _archive_cleanup_enabled() -> bool:
     return os.environ.get("ARCHIVE_CLEANUP_ENABLED", "true").lower() != "false"
 
 
+def _language_cleanup_enabled() -> bool:
+    return os.environ.get("LANGUAGE_CLEANUP_ENABLED", "true").lower() != "false"
+
+
 def _search_stall_cleanup_enabled() -> bool:
     return os.environ.get("SEARCH_STALL_CLEANUP_ENABLED", "true").lower() != "false"
 
@@ -106,6 +110,7 @@ async def lifespan(app: FastAPI):
         dangerous_cleanup=_dangerous_cleanup_enabled(),
         archive_cleanup=_archive_cleanup_enabled(),
         search_stall_cleanup=_search_stall_cleanup_enabled(),
+        language_cleanup=_language_cleanup_enabled(),
         monitor=app.state.monitor,
     )
     journal_task = asyncio.create_task(app.state.journal.run())

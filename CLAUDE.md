@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**Relay** — one web app over multiple Sonarr v3 instances (here: 1080p `:8989` + 4K `:8990`).
+**Relay** — one web app over multiple Sonarr instances (here: 1080p `:8989` + 4K `:8990`, both
+**Sonarr v4** — the client speaks the `/api/v3` path, which v4 still serves; v4 ignores the
+deprecated Language Profile, so language rules live in Custom Formats).
 Unified search/add, combined queue & library, and a **smart-add fallback chain**. Backend
 (FastAPI) serves the API *and* the built React SPA on a single origin; ships as one Docker container.
 
@@ -21,7 +23,7 @@ cd frontend && npm ci && npm run dev
 cd backend && uv run pytest
 cd backend && uv run pytest tests/test_chain.py::test_smart_add_emits_fallback_event_when_no_release   # single test
 
-# Frontend tests (vitest, 71 tests) — the Docker image build (below) runs this and
+# Frontend tests (vitest, 81 tests) — the Docker image build (below) runs this and
 # fails the build on a red suite, so keep it green before shipping
 cd frontend && npm test
 
@@ -145,6 +147,21 @@ default 30 min).
   other import pending past `STUCK_IMPORT_WARN_HOURS` (deduped per `downloadId` against the
   journal — ticks run duration + interval apart, so a time window would miss crossings).
   Live incident 2026-10-23: two `.7z` episodes sat 2+ days.
+- **English option** (`services/language.py`, `LANGUAGE_CLEANUP_ENABLED`) — every file must
+  carry English **audio**, or for anime (Sonarr type `anime` *or* the TVDB `Anime` genre —
+  every anime in the live library is typed `standard`) English **subtitles**. Two layers:
+  a Sonarr custom format "Foreign without English" (title regex: foreign tag such as
+  `MULTi`/`VOSTFR`/`FRENCH`/`GERMAN` AND no `ENG`/`Dual Audio`/`Multi-Subs` marker) scored
+  -10000 on every profile, so Sonarr — and therefore Relay's availability checks — reject
+  those releases up front; and `sweep_language`, which reads each file's mediaInfo tracks
+  and, on a miss, deletes the file → re-monitors → marks the grab failed (blocklists the
+  whole download) → `EpisodeSearch`. Delete must come first: a file at cutoff makes every
+  replacement "not an upgrade". Untagged (`und`) tracks and files with no grab in history
+  are journaled once (`sweep.language.unknown`) and never deleted. A language-*type*
+  custom format would not work: Sonarr's parser reads `MULTi`/`VOSTFR` as `Unknown`.
+  Live incident 2026-11-08: Evangelion imported 26 episodes of `MULTi-FRENCH/VOSTFR`
+  (French + Japanese audio, French-only subs). No recycle bin is configured, so the delete
+  is permanent.
 - **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
   metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
   = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`
@@ -206,7 +223,7 @@ default 30 min).
   **`Settings.jsx` sends `{...data, ...form}` with its own `??` fallbacks, so any default change
   must ship with the frontend or the first "Save defaults" click freezes the old value.**
   Env knobs: `RECONCILER_ENABLED`, `RECONCILER_INTERVAL_S`, `STALLED_CLEANUP_ENABLED`,
-  `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`.
+  `DANGEROUS_CLEANUP_ENABLED`, `SEARCH_STALL_CLEANUP_ENABLED`, `LANGUAGE_CLEANUP_ENABLED`.
 - **Health** — `GET /api/reconciler/status`; `/healthz` returns 503 when the loop is stale.
 
 ### Observability (`app/obs/`)
