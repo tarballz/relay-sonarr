@@ -49,10 +49,20 @@ def is_dead(live: TorrentLiveness) -> bool:
     Observed reality always wins: a torrent that has peers or is transferring is
     alive no matter what the trackers claim, because public-tracker counts are
     stale in both directions.
+
+    Except before metadata: one honest peer hands over the metadata (a few KiB)
+    in seconds, so connected peers that never do are a fake swarm, not life.
+    Live 2026-11-09: South Park S29E05 sat 10 days at metadata 0% holding 50
+    peers. Only bytes actually arriving count then; ``deadHours`` still gives a
+    fresh magnet its grace.
     """
-    if live.peers_connected > 0 or live.rate_download > 0:
+    if live.rate_download > 0:
         return False
-    return (not live.has_metadata) or live.max_seeders == 0
+    if not live.has_metadata:
+        return True
+    if live.peers_connected > 0:
+        return False
+    return live.max_seeders == 0
 
 
 async def liveness_map(client) -> dict[str, TorrentLiveness]:

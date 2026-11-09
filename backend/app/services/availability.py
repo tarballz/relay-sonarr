@@ -9,6 +9,7 @@ non-rejected release for a representative episode.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 
 from app.sonarr.registry import Registry
@@ -33,10 +34,15 @@ DANGEROUS_EXTENSIONS = (".exe", ".scr", ".bat", ".cmd", ".msi", ".pif",
                         ".vbs", ".ps1", ".lnk", ".jar")
 
 
+# "[SelfExtract Bundle]", "Self-Extracting", "self extract": an executable that
+# unpacks itself. Live 2026-11-09: South Park S29E05, grabbed 13 days pre-air.
+_SELF_EXTRACT = re.compile(r"self[\s._+-]?extract")
+
+
 def looks_dangerous(release: dict) -> bool:
     """True when the release/queue-item title is an executable fake."""
     title = (release.get("title") or "").strip().lower()
-    return title.endswith(DANGEROUS_EXTENSIONS)
+    return title.endswith(DANGEROUS_EXTENSIONS) or bool(_SELF_EXTRACT.search(title))
 
 
 def effective_min_seeders(*, min_seeders: int, wanted_since: str | None,

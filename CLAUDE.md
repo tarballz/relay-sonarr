@@ -165,7 +165,13 @@ default 30 min).
 - **Liveness** (`app/download/` + `services/liveness.py`) — Sonarr reports a torrent with no
   metadata and no seeders as `trackedDownloadStatus: "ok"`, so only the client knows. `is_dead`
   = (no metadata **or** 0 seeders on every tracker) **and** nothing moving; `seederCount: -1`
-  means *no tracker has answered yet* — unknown, never dead. `sweep_stalled` reaps dead
+  means *no tracker has answered yet* — unknown, never dead. **Before metadata, only bytes
+  arriving count as moving — connected peers do not**: one honest peer delivers metadata in
+  seconds, so peers that never do are a fake swarm. Live incident 2026-11-09: "South Park
+  S29E05 … [SelfExtract Bundle]", grabbed 13 days *pre-air*, sat 10 days at metadata 0% with
+  50 peers; the peer count kept `is_dead`, `sweep_stalled`'s peer skip and (via `sizeleft 0`)
+  `sweep_frozen` all from ever acting. `looks_dangerous` and a Sonarr custom format
+  ("Executable bundle", -10000) also reject `self-extract` titles. `sweep_stalled` reaps dead
   torrents in `deadHours` instead of `stalledDays`, never touches one moving bytes, spares
   downloads past `nearCompletePct`, and re-grabs a replacement itself
   (`grab.regrab_episode`, `skipRedownload=true`) because Sonarr's own re-search ranks by

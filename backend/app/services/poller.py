@@ -561,7 +561,10 @@ async def sweep_stalled(registry, db, ops, *, stalled_days: float, cap: int,
             # A connected peer usually means life. Once both nudges have been
             # spent and the clock still has not moved, that evidence is stronger
             # than the peer count, so let the frozen threshold decide.
-            if swarm is not None and swarm.peers_connected > 0 and not nudge_exhausted:
+            # Peers that never delivered metadata are a fake swarm (is_dead), not
+            # life: the S29E05 fake held 50 for ten days at metadata 0%.
+            if (swarm is not None and swarm.has_metadata
+                    and swarm.peers_connected > 0 and not nudge_exhausted):
                 continue
 
             frozen = (
